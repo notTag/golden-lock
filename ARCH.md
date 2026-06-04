@@ -36,6 +36,17 @@ path opens once via the resolver, freezes then hashes the SAME fd, then records 
 hash, freeze, and the recorded entry all apply to one inode (no re-open TOCTOU
 window, no swappable intermediate).
 
+The component walk extends ABOVE the repo root too. `openRootDir` does not open
+the root with a single path-based call (which would let the kernel follow every
+ancestor directory blindly); it `filepath.Abs` + `EvalSymlinks` the root once —
+resolving legitimate system symlinks such as macOS `/var`→`/private/var` and
+`/tmp`, under which every `t.TempDir()` and real `/tmp` checkout lives — then
+`openDirFromFSRoot` opens `/` and walks the canonical absolute path component by
+component with `Openat(O_NOFOLLOW|O_DIRECTORY)`, pinning each ancestor inode by
+fd. So a symlink introduced into any ancestor after canonicalization is rejected,
+and the whole golden/manifest resolution chain — root prefix included — is
+symlink-free at open time.
+
 The `*at` syscalls are wrapped portably in `syscalls.go` via
 `golang.org/x/sys/unix` (`unix.Openat`/`Renameat`/`Unlinkat`), which exports
 maintained, ABI-safe constants on every supported target (linux/amd64,
@@ -153,6 +164,15 @@ inherited PATH. Under root it is skipped entirely, relying on the nearest
 `NormalizePath` resolves any input (abs or cwd-relative) to the
 repo-root-relative cleaned form and errors if it escapes the root.
 `Manifest.AbsPath` is the inverse (rel → abs under `Root`).
+
+Known residual (documented, not a symlink-follow): root *selection* trusts
+path-based `os.Stat` for the `.git`/`golden-test.lock` markers, so an attacker
+who can plant such a marker may influence WHICH directory is chosen as the root.
+This cannot induce a symlink-follow (the chosen root is still opened through the
+O_NOFOLLOW canonical walk above) and cannot launder a root-owned `0444` hash
+(chown still targets the real inode); at worst it selects a different legitimate
+directory the attacker already controls. (A future explicit `--lockfile` flag
+would sidestep discovery entirely; not implemented in this happy-path build.)
 
 **Symlink / inode safety (symlink-FREE resolver).** Resolution never trusts a
 path string twice and never follows a symlink at ANY component. `resolveNoSymlink`
