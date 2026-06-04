@@ -36,6 +36,17 @@ path opens once via the resolver, freezes then hashes the SAME fd, then records 
 hash, freeze, and the recorded entry all apply to one inode (no re-open TOCTOU
 window, no swappable intermediate).
 
+The component walk extends ABOVE the repo root too. `openRootDir` does not open
+the root with a single path-based call (which would let the kernel follow every
+ancestor directory blindly); it `filepath.Abs` + `EvalSymlinks` the root once —
+resolving legitimate system symlinks such as macOS `/var`→`/private/var` and
+`/tmp`, under which every `t.TempDir()` and real `/tmp` checkout lives — then
+`openDirFromFSRoot` opens `/` and walks the canonical absolute path component by
+component with `Openat(O_NOFOLLOW|O_DIRECTORY)`, pinning each ancestor inode by
+fd. So a symlink introduced into any ancestor after canonicalization is rejected,
+and the whole golden/manifest resolution chain — root prefix included — is
+symlink-free at open time.
+
 The `*at` syscalls are wrapped portably in `syscalls.go` via
 `golang.org/x/sys/unix` (`unix.Openat`/`Renameat`/`Unlinkat`), which exports
 maintained, ABI-safe constants on every supported target (linux/amd64,

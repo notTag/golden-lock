@@ -36,18 +36,68 @@ import (
 // ELOOP, or a non-directory where a directory was required).
 var ErrSymlink = errors.New("refusing to operate on a symlink")
 
-// openRootDir opens the repo root directory itself with O_NOFOLLOW|O_DIRECTORY.
-// The repo root is the trust anchor for the component walk; if it is itself a
-// symlink we refuse. Returns a dir-fd as an *os.File the caller must Close.
+// openRootDir opens the repo root directory as a dir-fd, refusing to follow a
+// symlink at ANY component of the absolute root path — not just root's final
+// component. A single path-based open with O_NOFOLLOW would guard only the last
+// component and let the kernel follow every ancestor above the repo root, so an
+// attacker who could swap a symlink into an ancestor directory could relocate
+// the entire trust anchor. Instead we canonicalize the root once (resolving
+// legitimate system symlinks such as macOS /var→/private/var and /tmp, which
+// otherwise sit above every t.TempDir() and real /tmp checkout) and then walk
+// the canonical path from the filesystem root, opening each component with
+// syscall.Openat(O_NOFOLLOW|O_DIRECTORY). This pins every ancestor inode by fd
+// and rejects any symlink introduced after canonicalization.
+//
+// Returns a dir-fd as an *os.File the caller must Close.
 func openRootDir(root string) (*os.File, error) {
-	fd, err := syscall.Open(root, syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	abs, err := filepath.Abs(root)
 	if err != nil {
-		if isELOOP(err) || err == syscall.ENOTDIR {
-			return nil, fmt.Errorf("%s: %w", root, ErrSymlink)
-		}
 		return nil, err
 	}
-	return os.NewFile(uintptr(fd), root), nil
+	// EvalSymlinks resolves legitimate symlinks in the prefix to their real
+	// location; the subsequent O_NOFOLLOW walk then verifies (at open time) that
+	// the canonical chain contains no symlink and pins each ancestor by fd.
+	canon, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	return openDirFromFSRoot(canon)
+}
+
+// openDirFromFSRoot opens absDir (which must be absolute and symlink-canonical)
+// by opening the filesystem root and walking each component with
+// syscall.Openat(..., O_NOFOLLOW|O_DIRECTORY|...). A symlink or non-directory at
+// any component is rejected with ErrSymlink. Returns the final dir-fd as an
+// *os.File the caller must Close.
+func openDirFromFSRoot(absDir string) (*os.File, error) {
+	rootFD, err := syscall.Open(string(filepath.Separator),
+		syscall.O_DIRECTORY|syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	dir := os.NewFile(uintptr(rootFD), string(filepath.Separator))
+	walked := string(filepath.Separator)
+	for _, comp := range strings.Split(filepath.ToSlash(absDir), "/") {
+		if comp == "" || comp == "." {
+			continue
+		}
+		if comp == ".." {
+			dir.Close()
+			return nil, fmt.Errorf("root path %q contains %q", absDir, "..")
+		}
+		walked = filepath.Join(walked, comp)
+		nfd, oerr := sysOpenat(int(dir.Fd()), comp,
+			syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+		dir.Close()
+		if oerr != nil {
+			if isELOOP(oerr) || oerr == syscall.ENOTDIR {
+				return nil, fmt.Errorf("%s: %w", walked, ErrSymlink)
+			}
+			return nil, oerr
+		}
+		dir = os.NewFile(uintptr(nfd), walked)
+	}
+	return dir, nil
 }
 
 // splitRel splits a repo-root-relative, forward-slash, cleaned path into its

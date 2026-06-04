@@ -784,3 +784,70 @@ func TestManifestHeader_IsNotParsedAsEntry(t *testing.T) {
 		t.Errorf("header leaked into entries: %+v", back.Entries)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Repo-root-prefix hardening — the component walk now starts at the filesystem
+// root, so a symlink anywhere ABOVE the repo root is caught too (not just below
+// it). No privilege required (pure read path).
+// ---------------------------------------------------------------------------
+
+// TestOpenDirFromFSRoot_RejectsSymlinkComponent pins the prefix hardening:
+// openDirFromFSRoot walks the absolute path from the filesystem root with
+// O_NOFOLLOW at every component, so a symlinked directory anywhere in the chain
+// — not just below the repo root — is refused with ErrSymlink.
+func TestOpenDirFromFSRoot_RejectsSymlinkComponent(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval base: %v", err)
+	}
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	slink := filepath.Join(base, "slink")
+	if err := os.Symlink(real, slink); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+
+	// The real, symlink-free chain opens fine.
+	d, err := openDirFromFSRoot(real)
+	if err != nil {
+		t.Fatalf("openDirFromFSRoot(real): unexpected error %v", err)
+	}
+	d.Close()
+
+	// The same directory reached via a symlinked component is refused.
+	if _, err := openDirFromFSRoot(slink); !errors.Is(err, ErrSymlink) {
+		t.Errorf("openDirFromFSRoot(symlinked component) error = %v, want ErrSymlink", err)
+	}
+}
+
+// TestOpenRootDir_AcceptsSymlinkedAncestor pins that the prefix hardening does
+// NOT false-positive on a legitimate symlinked ancestor (e.g. macOS /var→/private
+// /var or /tmp, under which every t.TempDir() and real /tmp checkout lives):
+// openRootDir canonicalizes with EvalSymlinks before the strict from-/ walk, so
+// a repo reached through a symlinked ancestor still resolves correctly.
+func TestOpenRootDir_AcceptsSymlinkedAncestor(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "realroot")
+	if err := os.MkdirAll(filepath.Join(realRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir realroot/.git: %v", err)
+	}
+	const body = "golden via a symlinked ancestor"
+	if err := os.WriteFile(filepath.Join(realRoot, "g_test.go"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write golden: %v", err)
+	}
+	linkRoot := filepath.Join(base, "linkroot")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+
+	// Resolve the golden file using the repo root expressed THROUGH the symlink.
+	got, err := hashResolved(linkRoot, "g_test.go", filepath.Join(linkRoot, "g_test.go"))
+	if err != nil {
+		t.Fatalf("hashResolved via symlinked ancestor: unexpected error %v", err)
+	}
+	if want := sha256hex(body); got != want {
+		t.Errorf("hash = %s, want %s", got, want)
+	}
+}
