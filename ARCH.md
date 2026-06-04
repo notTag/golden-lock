@@ -165,6 +165,15 @@ inherited PATH. Under root it is skipped entirely, relying on the nearest
 repo-root-relative cleaned form and errors if it escapes the root.
 `Manifest.AbsPath` is the inverse (rel → abs under `Root`).
 
+Known residual (documented, not a symlink-follow): root *selection* trusts
+path-based `os.Stat` for the `.git`/`golden-test.lock` markers, so an attacker
+who can plant such a marker may influence WHICH directory is chosen as the root.
+This cannot induce a symlink-follow (the chosen root is still opened through the
+O_NOFOLLOW canonical walk above) and cannot launder a root-owned `0444` hash
+(chown still targets the real inode); at worst it selects a different legitimate
+directory the attacker already controls. (A future explicit `--lockfile` flag
+would sidestep discovery entirely; not implemented in this happy-path build.)
+
 **Symlink / inode safety (symlink-FREE resolver).** Resolution never trusts a
 path string twice and never follows a symlink at ANY component. `resolveNoSymlink`
 opens the repo root as a dir-fd and walks every component with `Openat` +
