@@ -1,0 +1,5 @@
+# Compiled binary (built locally / in CI, not checked in)
+/golden-test
+
+# Claude scratch space — not human-readable, not source of truth
+/whiteboard.md
