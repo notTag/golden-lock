@@ -1,0 +1,19 @@
+# golden-test: keep these paths byte-for-byte stable across checkouts.
+#
+# The manifest records the SHA-256 of each golden file's exact bytes. If git's
+# autocrlf rewrites line endings on checkout (LF<->CRLF), the bytes on disk no
+# longer match what was hashed and `golden-test verify` reports a spurious
+# mismatch (exit 1). `-text` tells git to never translate EOLs for these paths,
+# so the hashes stay valid on macOS, Linux, Windows, and WSL alike.
+
+# The manifest itself — its parsing and the hashes it stores depend on exact
+# bytes; a stray CR would corrupt a path or hash line.
+golden-test.lock        -text
+
+# Convention from the /golden-test skill: extracted core tests are *.golden.*
+# siblings (e.g. auth.golden.go, billing.golden.ts). Pin them all.
+*.golden.*              -text
+
+# Pin individual locked files explicitly as you lock them (uncomment + edit):
+# internal/auth/auth_golden_test.go   -text
+# tests/golden/**                     -text
