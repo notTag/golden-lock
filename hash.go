@@ -194,9 +194,8 @@ func resolveNoSymlink(root, rel, name string, flags int) (*os.File, error) {
 	return openLeafAt(parent, leaf, name, flags)
 }
 
-// hashReader computes the golden digest for the file content in r. It hashes
-// the file's repo-root-relative path relPath together with the content, in this
-// order: the length of relPath, then relPath, then the content:
+// hashReader computes the golden digest of the file content in r, bound to the
+// file's repo-root-relative path relPath:
 //
 //	SHA-256( uvarint(len(relPath)) || relPath || content )
 //
@@ -223,8 +222,8 @@ func hashReader(relPath string, r io.Reader) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// hashResolved computes the lowercase hex SHA-256 of the file at repo-root-
-// relative rel, refusing to follow a symlink at ANY component via the
+// hashResolved computes the golden digest (see hashReader) of the file at repo-
+// root-relative rel, refusing to follow a symlink at ANY component via the
 // symlink-free resolver (Vector A). name is the human-facing path for errors.
 func hashResolved(root, rel, name string) (string, error) {
 	f, err := resolveNoSymlink(root, rel, name, os.O_RDONLY)
