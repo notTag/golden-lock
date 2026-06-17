@@ -211,11 +211,11 @@ func resolveNoSymlink(root, rel, name string, flags int) (*os.File, error) {
 // bytes at all.
 func hashReader(relPath string, r io.Reader) (string, error) {
 	h := sha256.New()
-	var lp [binary.MaxVarintLen64]byte
+	var lengthPrefixBuf [binary.MaxVarintLen64]byte
 	lenRelPath := uint64(len(relPath))
-	n := binary.PutUvarint(lp[:], lenRelPath)
-	lpTrimmed := lp[:n]
-	h.Write(lpTrimmed)
+	bytesWritten := binary.PutUvarint(lengthPrefixBuf[:], lenRelPath)
+	lengthPrefix := lengthPrefixBuf[:bytesWritten]
+	h.Write(lengthPrefix)
 	io.WriteString(h, relPath)
 	if _, err := io.Copy(h, r); err != nil {
 		return "", err

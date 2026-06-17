@@ -60,13 +60,17 @@ func sha256hex(content string) string {
 }
 
 // goldenHash returns the golden digest for content stored at repo-root-relative
-// rel: SHA-256( uvarint(len(rel)) || rel || content ). It is computed here by
-// hand so it can cross-check the production hashReader.
-func goldenHash(rel, content string) string {
+// relPath: SHA-256( uvarint(len(relPath)) || relPath || content ). It is computed
+// here by hand, mirroring the production hashReader step for step, so it can
+// cross-check that implementation.
+func goldenHash(relPath, content string) string {
 	h := sha256.New()
-	var lp [binary.MaxVarintLen64]byte
-	h.Write(lp[:binary.PutUvarint(lp[:], uint64(len(rel)))])
-	h.Write([]byte(rel))
+	var lengthPrefixBuf [binary.MaxVarintLen64]byte
+	lenRelPath := uint64(len(relPath))
+	bytesWritten := binary.PutUvarint(lengthPrefixBuf[:], lenRelPath)
+	lengthPrefix := lengthPrefixBuf[:bytesWritten]
+	h.Write(lengthPrefix)
+	h.Write([]byte(relPath))
 	h.Write([]byte(content))
 	return hex.EncodeToString(h.Sum(nil))
 }
