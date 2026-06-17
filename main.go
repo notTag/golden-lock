@@ -366,6 +366,12 @@ func dispatch(args []string) int {
 	}
 }
 
+/*routes by subcommand
+* 	lock
+* 	unlock
+* 	verify
+* 	help
+ */
 func main() {
 	os.Exit(dispatch(os.Args[1:]))
 }

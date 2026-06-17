@@ -195,24 +195,28 @@ func resolveNoSymlink(root, rel, name string, flags int) (*os.File, error) {
 }
 
 // hashReader computes the golden digest for the file content in r. It hashes
-// the file's repo-root-relative path rel together with the content, in this
-// order: the length of rel, then rel, then the content:
+// the file's repo-root-relative path relPath together with the content, in this
+// order: the length of relPath, then relPath, then the content:
 //
-//	SHA-256( uvarint(len(rel)) || rel || content )
+//	SHA-256( uvarint(len(relPath)) || relPath || content )
 //
 // Hashing the path (not just the content) means the path is checked, not just
 // recorded. A manifest line cannot be moved to point at a different file, and
 // two golden files with identical content cannot be swapped, without the hash
 // changing and verify failing.
 //
-// We write the length of rel first rather than a separator byte between rel and
-// content. A separator would forbid that byte from appearing in the content;
-// the length prefix has no such limit, so the content can be any bytes at all.
-func hashReader(rel string, r io.Reader) (string, error) {
+// We write the length of relPath first rather than a separator byte between
+// relPath and content. A separator would forbid that byte from appearing in
+// the content. The length prefix has no such limit, so the content can be any
+// bytes at all.
+func hashReader(relPath string, r io.Reader) (string, error) {
 	h := sha256.New()
 	var lp [binary.MaxVarintLen64]byte
-	h.Write(lp[:binary.PutUvarint(lp[:], uint64(len(rel)))])
-	io.WriteString(h, rel)
+	lenRelPath := uint64(len(relPath))
+	n := binary.PutUvarint(lp[:], lenRelPath)
+	lpTrimmed := lp[:n]
+	h.Write(lpTrimmed)
+	io.WriteString(h, relPath)
 	if _, err := io.Copy(h, r); err != nil {
 		return "", err
 	}
