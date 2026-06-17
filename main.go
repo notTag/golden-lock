@@ -95,8 +95,8 @@ func runLock(args []string) int {
 	// WriteManifestLocked at the very end, so a mid-loop kill never publishes a
 	// manifest that asserts immutability over a not-yet-frozen file (E).
 	type locked struct {
-		rel, hash string
-		f         *os.File
+		relPath, hash string
+		f             *os.File
 	}
 	pending := make([]locked, 0, len(args))
 	defer func() {
@@ -108,15 +108,15 @@ func runLock(args []string) int {
 	}()
 
 	for _, f := range args {
-		rel, err := NormalizePath(root, f)
+		relPath, err := NormalizePath(root, f)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s lock: bad path %q: %v\n", progName(), f, err)
 			return ExitWriteArgs
 		}
-		abs := m.AbsPath(rel)
+		abs := m.AbsPath(relPath)
 		// O_RDWR so we can both freeze and hash; resolver refuses a symlink at
 		// ANY component (leaf or intermediate dir) — Vector A.
-		fh, err := openWritableResolved(root, rel, abs)
+		fh, err := openWritableResolved(root, relPath, abs)
 		if err != nil {
 			if errors.Is(err, ErrSymlink) {
 				fmt.Fprintf(os.Stderr, "%s lock: refusing %q: path (or a parent) is a symlink\n", progName(), f)
@@ -137,26 +137,26 @@ func runLock(args []string) int {
 			fmt.Fprintf(os.Stderr, "%s lock: cannot rewind %q: %v\n", progName(), f, err)
 			return ExitWriteIO
 		}
-		hash, err := hashReader(rel, fh)
+		hash, err := hashReader(relPath, fh)
 		if err != nil {
 			fh.Close()
 			fmt.Fprintf(os.Stderr, "%s lock: cannot read %q: %v\n", progName(), f, err)
 			return ExitWriteIO
 		}
-		pending = append(pending, locked{rel: rel, hash: hash, f: fh})
+		pending = append(pending, locked{relPath: relPath, hash: hash, f: fh})
 	}
 
 	// All files are now frozen 0444. Build the manifest in memory and emit drift
 	// / idempotency notices, then publish ONCE at the end.
 	for _, p := range pending {
-		if i := m.Find(p.rel); i >= 0 {
+		if i := m.Find(p.relPath); i >= 0 {
 			if m.Entries[i].Hash == p.hash {
-				fmt.Printf("note: %s already locked, unchanged\n", p.rel)
+				fmt.Printf("note: %s already locked, unchanged\n", p.relPath)
 			} else {
-				fmt.Printf("note: %s already locked; updating recorded hash to match current content\n", p.rel)
+				fmt.Printf("note: %s already locked; updating recorded hash to match current content\n", p.relPath)
 			}
 		}
-		m.Upsert(p.rel, p.hash)
+		m.Upsert(p.relPath, p.hash)
 	}
 
 	// SINGLE manifest publish at the very end (Vector E): temp → root:0/444 →
@@ -168,7 +168,7 @@ func runLock(args []string) int {
 	}
 
 	for _, p := range pending {
-		fmt.Printf("locked %s\n", p.rel)
+		fmt.Printf("locked %s\n", p.relPath)
 	}
 	return ExitWriteOK
 }
@@ -211,40 +211,40 @@ func runUnlock(args []string) int {
 	// Resolve all paths AND verify membership BEFORE mutating anything (#6).
 	// An untracked arg is an arg error (5); we must not chown/chmod any file
 	// (nor leave earlier args already unlocked) when a later arg is rejected.
-	rels := make([]string, 0, len(args))
+	relPaths := make([]string, 0, len(args))
 	for _, f := range args {
-		rel, err := NormalizePath(root, f)
+		relPath, err := NormalizePath(root, f)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s unlock: bad path %q: %v\n", progName(), f, err)
 			return ExitWriteArgs
 		}
-		if m.Find(rel) < 0 {
-			fmt.Fprintf(os.Stderr, "%s unlock: %q is not listed in %s\n", progName(), rel, LockfileName)
+		if m.Find(relPath) < 0 {
+			fmt.Fprintf(os.Stderr, "%s unlock: %q is not listed in %s\n", progName(), relPath, LockfileName)
 			return ExitWriteArgs
 		}
-		rels = append(rels, rel)
+		relPaths = append(relPaths, relPath)
 	}
 
-	for _, rel := range rels {
-		abs := m.AbsPath(rel)
+	for _, relPath := range relPaths {
+		abs := m.AbsPath(relPath)
 		// Open via the symlink-free resolver (repo-root dir-fd walk) so a swapped
 		// parent/intermediate directory cannot redirect the chown/chmod (Vector A).
-		fh, err := openWritableResolved(root, rel, abs)
+		fh, err := openWritableResolved(root, relPath, abs)
 		if err != nil {
 			if errors.Is(err, ErrSymlink) {
-				fmt.Fprintf(os.Stderr, "%s unlock: refusing %q: path (or a parent) is a symlink\n", progName(), rel)
+				fmt.Fprintf(os.Stderr, "%s unlock: refusing %q: path (or a parent) is a symlink\n", progName(), relPath)
 				return ExitWriteArgs
 			}
-			fmt.Fprintf(os.Stderr, "%s unlock: cannot open %q: %v\n", progName(), rel, err)
+			fmt.Fprintf(os.Stderr, "%s unlock: cannot open %q: %v\n", progName(), relPath, err)
 			return ExitWriteIO
 		}
 		if err := UnlockFileFD(fh); err != nil {
 			fh.Close()
-			fmt.Fprintf(os.Stderr, "%s unlock: cannot restore %q: %v\n", progName(), rel, err)
+			fmt.Fprintf(os.Stderr, "%s unlock: cannot restore %q: %v\n", progName(), relPath, err)
 			return ExitWriteIO
 		}
 		fh.Close()
-		m.Remove(rel)
+		m.Remove(relPath)
 	}
 
 	// If unlocking emptied the manifest, remove the manifest file entirely so a
@@ -256,8 +256,8 @@ func runUnlock(args []string) int {
 			fmt.Fprintf(os.Stderr, "%s unlock: cannot remove emptied manifest: %v\n", progName(), err)
 			return ExitWriteIO
 		}
-		for _, rel := range rels {
-			fmt.Printf("unlocked %s\n", rel)
+		for _, relPath := range relPaths {
+			fmt.Printf("unlocked %s\n", relPath)
 		}
 		fmt.Printf("note: %s now empty; removed it (verify will report absent)\n", LockfileName)
 		return ExitWriteOK
@@ -271,8 +271,8 @@ func runUnlock(args []string) int {
 		return ExitWriteIO
 	}
 
-	for _, rel := range rels {
-		fmt.Printf("unlocked %s\n", rel)
+	for _, relPath := range relPaths {
+		fmt.Printf("unlocked %s\n", relPath)
 	}
 	return ExitWriteOK
 }

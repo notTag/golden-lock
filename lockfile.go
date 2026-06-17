@@ -152,26 +152,26 @@ func NormalizePath(root, input string) (string, error) {
 		}
 	}
 
-	rel, err := filepath.Rel(rootAbs, abs)
+	relPath, err := filepath.Rel(rootAbs, abs)
 	if err != nil {
 		return "", err
 	}
-	rel = filepath.Clean(rel)
+	relPath = filepath.Clean(relPath)
 
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q escapes repo root %q", input, rootAbs)
 	}
-	if rel == "." {
+	if relPath == "." {
 		return "", fmt.Errorf("path %q resolves to the repo root itself", input)
 	}
 
-	return filepath.ToSlash(rel), nil
+	return filepath.ToSlash(relPath), nil
 }
 
 // AbsPath resolves a repo-root-relative Entry.Path back to an absolute
 // filesystem path under the manifest's Root.
-func (m *Manifest) AbsPath(rel string) string {
-	return filepath.Join(m.Root, filepath.FromSlash(rel))
+func (m *Manifest) AbsPath(relPath string) string {
+	return filepath.Join(m.Root, filepath.FromSlash(relPath))
 }
 
 // ReadManifest loads and parses the manifest at root.
@@ -203,7 +203,7 @@ func ReadManifest(root string) (*Manifest, error) {
 	// Threat model: pre-apply / dev machines are legitimately non-root, so a
 	// non-root-owned manifest is a WARNING, not a hard failure. (A symlinked or
 	// non-regular manifest was already hard-rejected above.)
-	if fi, serr := f.Stat(); serr == nil {
+	if fi, statErr := f.Stat(); statErr == nil {
 		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != 0 {
 			fmt.Fprintf(os.Stderr, "warning: %s is not root-owned (uid=%d); its integrity is not anchored\n", path, st.Uid)
 		}
@@ -392,31 +392,32 @@ func randSuffix() string {
 	return hex.EncodeToString(b[:])
 }
 
-// Find returns the index of the entry with the given normalized relpath, or -1.
-func (m *Manifest) Find(rel string) int {
+// Find returns the index of the entry with the given normalized relPath, or -1.
+func (m *Manifest) Find(relPath string) int {
 	for i := range m.Entries {
-		if m.Entries[i].Path == rel {
+		if m.Entries[i].Path == relPath {
 			return i
 		}
 	}
 	return -1
 }
 
-// Upsert inserts or updates the entry for rel with the given hash. It returns
-// true if an existing entry was updated, false if a new entry was appended.
-func (m *Manifest) Upsert(rel, hash string) bool {
-	if i := m.Find(rel); i >= 0 {
+// Upsert inserts or updates the entry for relPath with the given hash. It
+// returns true if an existing entry was updated, false if a new entry was
+// appended.
+func (m *Manifest) Upsert(relPath, hash string) bool {
+	if i := m.Find(relPath); i >= 0 {
 		m.Entries[i].Hash = hash
 		return true
 	}
-	m.Entries = append(m.Entries, Entry{Hash: hash, Path: rel})
+	m.Entries = append(m.Entries, Entry{Hash: hash, Path: relPath})
 	return false
 }
 
-// Remove deletes the entry for rel. It returns true if an entry was removed,
-// false if rel was not listed.
-func (m *Manifest) Remove(rel string) bool {
-	i := m.Find(rel)
+// Remove deletes the entry for relPath. It returns true if an entry was removed,
+// false if relPath was not listed.
+func (m *Manifest) Remove(relPath string) bool {
+	i := m.Find(relPath)
 	if i < 0 {
 		return false
 	}

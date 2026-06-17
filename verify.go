@@ -55,10 +55,10 @@ func Verify(root string) (results []VerifyResult, exitCode int) {
 		// Open via the symlink-free resolver: a symlink at the leaf OR any
 		// intermediate directory is rejected (ErrSymlink) and reported as Missing
 		// rather than silently verifying OK against a decoy (Vector A / #5).
-		actual, herr := hashResolved(m.Root, e.Path, abs)
+		actual, hashErr := hashResolved(m.Root, e.Path, abs)
 		res := VerifyResult{Path: e.Path, Expected: e.Hash}
 		switch {
-		case herr != nil:
+		case hashErr != nil:
 			res.Status = StatusMissing
 			res.Actual = ""
 			if exitCode < ExitVerifyMissing {
