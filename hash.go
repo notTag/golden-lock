@@ -21,6 +21,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -193,31 +194,36 @@ func resolveNoSymlink(root, rel, name string, flags int) (*os.File, error) {
 	return openLeafAt(parent, leaf, name, flags)
 }
 
-// openNoFollow opens absPath read-only refusing symlinks at every component. It
-// derives the repo-root-relative form from absPath's directory tree by treating
-// the entire absPath as root + single-leaf is insufficient, so it walks from the
-// filesystem root. Retained for the HashFile path; verify/lock/unlock use
-// resolveNoSymlink with an explicit repo root.
-func openNoFollow(absPath string) (*os.File, error) {
-	root, rel := filepath.Split(filepath.Clean(absPath))
-	root = filepath.Clean(root)
-	if rel == "" {
-		return nil, fmt.Errorf("%s: not a file path", absPath)
-	}
-	return resolveNoSymlink(root, rel, absPath, os.O_RDONLY)
-}
-
-// hashReader computes the lowercase hex SHA-256 of r.
-func hashReader(r io.Reader) (string, error) {
+// hashReader computes the golden digest of the file content in r, bound to the
+// file's repo-root-relative path relPath:
+//
+//	SHA-256( uvarint(len(relPath)) || relPath || content )
+//
+// Hashing the path (not just the content) means the path is checked, not just
+// recorded. A manifest line cannot be moved to point at a different file, and
+// two golden files with identical content cannot be swapped, without the hash
+// changing and verify failing.
+//
+// We write the length of relPath first rather than a separator byte between
+// relPath and content. A separator would forbid that byte from appearing in
+// the content. The length prefix has no such limit, so the content can be any
+// bytes at all.
+func hashReader(relPath string, r io.Reader) (string, error) {
 	h := sha256.New()
+	var lengthPrefixBuf [binary.MaxVarintLen64]byte
+	lenRelPath := uint64(len(relPath))
+	bytesWritten := binary.PutUvarint(lengthPrefixBuf[:], lenRelPath)
+	lengthPrefix := lengthPrefixBuf[:bytesWritten]
+	h.Write(lengthPrefix)
+	io.WriteString(h, relPath)
 	if _, err := io.Copy(h, r); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// hashResolved computes the lowercase hex SHA-256 of the file at repo-root-
-// relative rel, refusing to follow a symlink at ANY component via the
+// hashResolved computes the golden digest (see hashReader) of the file at repo-
+// root-relative rel, refusing to follow a symlink at ANY component via the
 // symlink-free resolver (Vector A). name is the human-facing path for errors.
 func hashResolved(root, rel, name string) (string, error) {
 	f, err := resolveNoSymlink(root, rel, name, os.O_RDONLY)
@@ -225,17 +231,14 @@ func hashResolved(root, rel, name string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	return hashReader(f)
+	return hashReader(rel, f)
 }
 
-// HashFile computes the lowercase hex SHA-256 of the file at the given path,
-// refusing to follow a symlink at any component. Returns ErrSymlink for a
-// symlinked component, or another error if the file cannot be opened/read.
-func HashFile(path string) (string, error) {
-	f, err := openNoFollow(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	return hashReader(f)
+// HashFile computes the golden digest (see hashReader) of the file at repo-root-
+// relative rel under root, refusing to follow a symlink at any component.
+// Because the hash covers rel, the result matches what lock records and verify
+// recomputes for the same path. Returns ErrSymlink for a symlinked component, or
+// another error if the file cannot be opened/read.
+func HashFile(root, rel string) (string, error) {
+	return hashResolved(root, rel, filepath.Join(root, filepath.FromSlash(rel)))
 }
