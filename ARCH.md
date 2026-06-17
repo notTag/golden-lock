@@ -13,17 +13,40 @@ The signatures below are the FROZEN CONTRACT. Parallel implementers fill the
 
 ## File responsibilities + signatures
 
-### hash.go — SHA-256 of a file + symlink-FREE path resolver
+### hash.go — path-bound SHA-256 of a file + symlink-FREE path resolver
 ```go
 var ErrSymlink error // some path component (leaf OR intermediate dir) is a symlink
 
 func resolveNoSymlink(root, rel, name string, flags int) (*os.File, error) // component-walk, O_NOFOLLOW at every step
 func hashResolved(root, rel, name string) (string, error)                  // resolveNoSymlink + hashReader
-func hashReader(r io.Reader) (string, error)                                // hash an already-open reader
-func HashFile(path string) (string, error)                                 // resolver-backed convenience
-func openNoFollow(absPath string) (*os.File, error)                        // resolver-backed convenience
+func hashReader(rel string, r io.Reader) (string, error)                    // path-bound hash of an already-open reader
+func HashFile(root, rel string) (string, error)                            // resolver-backed convenience
 ```
-Lowercase hex SHA-256 of one file. The trust primitive is `resolveNoSymlink`,
+**The digest covers the path, not just the content.** `hashReader` hashes
+three things in order: the length of the file's path, the path itself, then the
+file content. In short:
+
+```
+SHA-256( uvarint(len(rel)) || rel || content )
+```
+
+`rel` is the repo-root-relative, forward-slash path. We never hash content on
+its own — the same `rel` stored in the manifest line is part of what we hash.
+
+This matters because the path in a manifest line is now checked, not just
+written down. Two attacks that a content-only hash would miss:
+
+1. Move a locked line to point at a different file. The path changed, so the
+   hash no longer matches and verify fails.
+2. Swap two golden files that happen to have identical content. Their paths
+   differ, so their hashes differ, and the swap is caught.
+
+We put the path length first instead of using a separator character (like a
+space or a NUL byte) between path and content. A separator would mean that
+character could never appear in the file content. The length prefix has no such
+limit: the file can contain any bytes at all.
+
+The trust primitive is `resolveNoSymlink`,
 which opens the repo root with `O_NOFOLLOW|O_DIRECTORY`, walks each intermediate
 component with `Openat(dirfd, comp, O_NOFOLLOW|O_DIRECTORY|O_RDONLY|O_CLOEXEC)`
 down to the parent dir-fd, then opens the leaf with `Openat(parentfd, leaf,
@@ -149,9 +172,13 @@ func main()
 ## Contract notes
 
 **Manifest line format.** One entry per line: `<sha256>  <relpath>`. Hash is
-lowercase hex; separator is a run of whitespace — space OR tab (split on the
-first whitespace run via `unicode.IsSpace` → `(hash, path)`; interior path
-spaces preserved). `relpath` is repo-root-relative, forward-slash, normalized.
+lowercase hex. The hash covers the path as well as the content
+(`SHA-256( uvarint(len(relpath)) || relpath || content )` — see hash.go), so
+`<relpath>` is a checked value, not just a label: change it to point at another
+file and verify fails. Separator is a run of whitespace — space OR tab (split on
+the first whitespace run via `unicode.IsSpace` → `(hash, path)`; interior path
+spaces preserved). `relpath`
+is repo-root-relative, forward-slash, normalized.
 Lines whose first non-space byte is `#` are comments; blank lines ignored. No
 `sha256sum` `*` binary marker. `WriteManifest` emits header comment lines then
 entries in `Manifest.Entries` order (two spaces as the separator).

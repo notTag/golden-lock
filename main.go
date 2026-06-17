@@ -137,7 +137,7 @@ func runLock(args []string) int {
 			fmt.Fprintf(os.Stderr, "%s lock: cannot rewind %q: %v\n", progName(), f, err)
 			return ExitWriteIO
 		}
-		hash, err := hashReader(fh)
+		hash, err := hashReader(rel, fh)
 		if err != nil {
 			fh.Close()
 			fmt.Fprintf(os.Stderr, "%s lock: cannot read %q: %v\n", progName(), f, err)

@@ -17,6 +17,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -49,11 +50,25 @@ func writeFile(t *testing.T, root, rel, content string) string {
 	return abs
 }
 
-// sha256hex returns the lowercase hex SHA-256 of content, computed independently
-// of the production HashFile so the two can cross-check each other.
+// sha256hex returns the lowercase hex SHA-256 of content alone. This is NOT the
+// golden digest, which also hashes the path (see goldenHash). Use it only when a
+// test needs some valid 64-hex hash string, e.g. manifest parse and upsert tests
+// that never recompute against a real file.
 func sha256hex(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
+}
+
+// goldenHash returns the golden digest for content stored at repo-root-relative
+// rel: SHA-256( uvarint(len(rel)) || rel || content ). It is computed here by
+// hand so it can cross-check the production hashReader.
+func goldenHash(rel, content string) string {
+	h := sha256.New()
+	var lp [binary.MaxVarintLen64]byte
+	h.Write(lp[:binary.PutUvarint(lp[:], uint64(len(rel)))])
+	h.Write([]byte(rel))
+	h.Write([]byte(content))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // writeManifest writes a golden-test.lock with the given raw body at root.
@@ -71,20 +86,21 @@ func writeManifest(t *testing.T, root, body string) {
 func TestHashFile_MatchesKnownDigest(t *testing.T) {
 	root := fakeRepo(t)
 	const content = "golden assertions must not change\n"
-	abs := writeFile(t, root, "testdata/golden.txt", content)
+	const rel = "testdata/golden.txt"
+	writeFile(t, root, rel, content)
 
-	got, err := HashFile(abs)
+	got, err := HashFile(root, rel)
 	if err != nil {
 		t.Fatalf("HashFile: %v", err)
 	}
-	if want := sha256hex(content); got != want {
+	if want := goldenHash(rel, content); got != want {
 		t.Errorf("HashFile = %s, want %s", got, want)
 	}
 }
 
 func TestHashFile_MissingReturnsError(t *testing.T) {
 	root := fakeRepo(t)
-	_, err := HashFile(filepath.Join(root, "does-not-exist"))
+	_, err := HashFile(root, "does-not-exist")
 	if err == nil {
 		t.Fatal("HashFile of missing file: want error, got nil")
 	}
@@ -268,7 +284,7 @@ func lockManifestFor(t *testing.T, root string, rels ...string) {
 	t.Helper()
 	m := &Manifest{Root: root, Path: LockfilePath(root)}
 	for _, rel := range rels {
-		h, err := HashFile(m.AbsPath(rel))
+		h, err := HashFile(root, rel)
 		if err != nil {
 			t.Fatalf("hash %s: %v", rel, err)
 		}
@@ -501,7 +517,7 @@ func TestHashFile_RejectsSymlink(t *testing.T) {
 		t.Skipf("symlink unsupported here: %v", err)
 	}
 
-	_, err := HashFile(link)
+	_, err := HashFile(root, "golden.txt")
 	if err == nil {
 		t.Fatal("HashFile of a symlink: want error, got nil")
 	}
@@ -636,7 +652,7 @@ func TestRunLock_FreezesBeforeRecording(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("manifest missing entry for %s", rel)
 	}
-	if want := sha256hex("freeze me before you hash me"); m.Entries[i].Hash != want {
+	if want := goldenHash(rel, "freeze me before you hash me"); m.Entries[i].Hash != want {
 		t.Errorf("recorded hash = %s, want %s", m.Entries[i].Hash, want)
 	}
 	mfi, err := os.Stat(LockfilePath(root))
@@ -847,7 +863,7 @@ func TestOpenRootDir_AcceptsSymlinkedAncestor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hashResolved via symlinked ancestor: unexpected error %v", err)
 	}
-	if want := sha256hex(body); got != want {
+	if want := goldenHash("g_test.go", body); got != want {
 		t.Errorf("hash = %s, want %s", got, want)
 	}
 }
