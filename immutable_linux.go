@@ -19,17 +19,19 @@ import "golang.org/x/sys/unix"
 const fsImmutableFlag = 0x00000010
 
 func setImmutableFD(fd int) error {
-	flags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
+	currentFlags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
 	if err != nil {
 		return err
 	}
-	return unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, flags|fsImmutableFlag)
+	withImmutable := currentFlags | fsImmutableFlag
+	return unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, withImmutable)
 }
 
 func clearImmutableFD(fd int) error {
-	flags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
+	currentFlags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
 	if err != nil {
 		return err
 	}
-	return unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, flags&^fsImmutableFlag)
+	withoutImmutable := currentFlags &^ fsImmutableFlag
+	return unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, withoutImmutable)
 }

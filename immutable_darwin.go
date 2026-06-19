@@ -21,7 +21,9 @@ func setImmutableFD(fd int) error {
 	if err := unix.Fstat(fd, &st); err != nil {
 		return err
 	}
-	return unix.Fchflags(fd, int(st.Flags)|unix.SF_IMMUTABLE)
+	currentFlags := int(st.Flags)
+	withImmutable := currentFlags | unix.SF_IMMUTABLE
+	return unix.Fchflags(fd, withImmutable)
 }
 
 func clearImmutableFD(fd int) error {
@@ -29,5 +31,7 @@ func clearImmutableFD(fd int) error {
 	if err := unix.Fstat(fd, &st); err != nil {
 		return err
 	}
-	return unix.Fchflags(fd, int(st.Flags)&^unix.SF_IMMUTABLE)
+	currentFlags := int(st.Flags)
+	withoutImmutable := currentFlags &^ unix.SF_IMMUTABLE
+	return unix.Fchflags(fd, withoutImmutable)
 }
