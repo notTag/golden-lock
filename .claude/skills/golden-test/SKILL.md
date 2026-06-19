@@ -8,7 +8,7 @@ description: |
   "golden" tests. Recommends core tests that should be broken out into their
   own files, and on confirmation extracts each into a `<name>.golden.<ext>`
   sibling and locks it with the `golden-test` binary (root-owned 444 +
-  SHA-256 manifest). Trigger on "/golden-test", "find golden tests",
+  filesystem immutable flag + SHA-256 manifest). Trigger on "/golden-test", "find golden tests",
   "which tests should be immutable", "lock my core tests".
 allowed-tools:
   - Read
@@ -147,9 +147,15 @@ Extraction steps per test:
 Once the golden siblings are green, freeze them with this repo's CLI:
 
 ```sh
-sudo golden-test lock <each new .golden file>   # root-own + chmod 444 + record SHA-256 in golden-test.lock
+sudo golden-test lock <each new .golden file>   # root-own + chmod 444 + immutable flag + record SHA-256 in golden-test.lock
 golden-test verify                              # read-only gate, exit 0 == all hashes match
 ```
+
+`lock` also sets the filesystem immutable flag (`chflags schg` / `chattr +i`),
+which is what actually blocks tampering: `chmod 444` alone does not stop
+replace-by-rename (the write-temp-then-rename most editors and agent file tools
+use). On a filesystem that can't store the flag, `lock` prints a per-file warning
+and falls back to detection-only (the manifest + CI `verify` still catch drift).
 
 `lock` also locks `golden-test.lock` itself (root-owned 444) — that's the trust
 anchor. After locking, remind the user to:
@@ -164,8 +170,9 @@ repo root (or point at `./golden-test`).
 ## Guardrails
 
 - Read-only through step 3; nothing is moved or locked without the step-4 yes.
-- Never `chmod`/`chown`/`sudo`-around a file the tool already locked — if you hit
-  `EACCES` on a test, that test is the spec; fix the code.
+- Never `chmod`/`chown`/`chflags`/`chattr`/`sudo`-around a file the tool already
+  locked — if you hit `EACCES` (in-place write) or `EPERM` (rename-replace) on a
+  test, that test is the spec; fix the code.
 - Don't lock a file with a red or empty suite. Verify green first.
 - Keep the moved test byte-for-byte identical to the original assertion — the
   break-out relocates, it does not rewrite, the invariant.

@@ -80,12 +80,22 @@ func isELOOP(err error) bool {
 	return errors.Is(err, syscall.ELOOP)
 }
 
-// LockFileFD makes an already-open file immutable via its fd: fchown root:0
-// then fchmod 0444. Operating on the fd (not the path) guarantees the locked
-// inode is exactly the one the caller hashed (#2/#3). Requires root.
+// LockFileFD freezes an already-open file's ownership and mode via its fd:
+// fchown root:0 then fchmod 0444. Operating on the fd (not the path) guarantees
+// the frozen inode is exactly the one the caller hashed (#2/#3). It first clears
+// any existing immutable flag so re-locking an already-immutable golden file
+// succeeds (chown/chmod are refused on an immutable inode). Requires root.
+//
+// This is the ownership/mode freeze only; the filesystem immutable flag — the
+// guard that also defeats replace-by-rename — is applied separately by the lock
+// orchestration via applyImmutable, so it can report when a filesystem cannot
+// store the flag and the temp manifest stays renamable before publish.
 func LockFileFD(f *os.File) error {
 	if !IsRoot() {
 		return fmt.Errorf("lock %s: must be root", f.Name())
+	}
+	if err := clearImmutable(f); err != nil {
+		return fmt.Errorf("lock %s: clear prior immutable flag: %w", f.Name(), err)
 	}
 	if err := f.Chown(0, 0); err != nil {
 		return fmt.Errorf("lock %s: chown root: %w", f.Name(), err)
@@ -96,11 +106,15 @@ func LockFileFD(f *os.File) error {
 	return nil
 }
 
-// UnlockFileFD restores an already-open file to writable via its fd: fchown to
-// the sudo user then fchmod 0644. Requires root.
+// UnlockFileFD restores an already-open file to writable via its fd: clear the
+// immutable flag (else the chown/chmod below are refused), then fchown to the
+// sudo user and fchmod 0644. Requires root.
 func UnlockFileFD(f *os.File) error {
 	if !IsRoot() {
 		return fmt.Errorf("unlock %s: must be root", f.Name())
+	}
+	if err := clearImmutable(f); err != nil {
+		return fmt.Errorf("unlock %s: clear immutable flag: %w", f.Name(), err)
 	}
 	uid, gid := SudoUID()
 	if err := f.Chown(uid, gid); err != nil {

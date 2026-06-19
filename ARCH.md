@@ -116,12 +116,41 @@ func IsRoot() bool
 func SudoUID() (uid int, gid int)
 func LockFile(absPath string) error   // open O_NOFOLLOW, then fchown root:0 + fchmod 0444; requires root
 func UnlockFile(absPath string) error // open O_NOFOLLOW, then fchown sudo-user + fchmod 0644; requires root
-func LockFileFD(f *os.File) error     // fchown root:0 + fchmod 0444 on an open fd; requires root
-func UnlockFileFD(f *os.File) error   // fchown sudo-user + fchmod 0644 on an open fd; requires root
+func LockFileFD(f *os.File) error     // clear immutable flag, then fchown root:0 + fchmod 0444 on an open fd; requires root
+func UnlockFileFD(f *os.File) error   // clear immutable flag, then fchown sudo-user + fchmod 0644 on an open fd; requires root
 ```
 All chown/chmod go through a fd opened with `O_NOFOLLOW` (`f.Chown`/`f.Chmod` =
 fchown/fchmod), never a bare path — a symlinked or swapped leaf is rejected,
 never followed. `LockFile`/`UnlockFile` reject symlinks via `ErrSymlink`.
+
+`LockFileFD`/`UnlockFileFD` are the ownership/mode freeze only. They clear any
+prior immutable flag FIRST (chown/chmod are refused on an immutable inode, so
+this also makes re-lock idempotent); they do NOT set the flag. The immutable
+flag — the guard that defeats replace-by-rename — is applied by the lock
+orchestration via `applyImmutable` (see immutable.go), kept separate so it can be
+reported per-file and so the manifest temp stays renamable before publish.
+
+### immutable.go (+ immutable_darwin.go / immutable_linux.go) — filesystem immutable flag
+```go
+func setImmutableFD(fd int) error   // per-GOOS: darwin chflags SF_IMMUTABLE; linux FS_IOC_SETFLAGS +FS_IMMUTABLE_FL
+func clearImmutableFD(fd int) error // per-GOOS inverse (read-modify-write, preserves unrelated inode flags)
+
+func applyImmutable(f *os.File) (applied bool, err error) // (false,nil) = filesystem can't store the flag → detection-only
+func clearImmutable(f *os.File) error                     // no-op if unsupported or already clear
+```
+Why: `chmod 0444` + root ownership stop an in-place write of the existing inode
+but NOT replace-by-rename — an editor (and Claude's Edit tool) writes a sibling
+temp and renames it over the target, which needs write permission on the parent
+DIRECTORY, not the file. The immutable flag closes that hole: an immutable inode
+cannot be written, chmod'd, chown'd, renamed, renamed-over, or unlinked until the
+flag is cleared (root; on a host at securelevel ≥ 1, a single-user boot). macOS
+uses `SF_IMMUTABLE` (`schg`) — root-clearable at securelevel 0, self-hardening to
+root-proof at securelevel ≥ 1; Linux uses `FS_IMMUTABLE_FL` via the
+`FS_IOC_*FLAGS` ioctls (`x/sys` doesn't export the flag bit, so it is defined
+from the kernel uapi value `0x10`). Immutability is best-effort PREVENTION; the
+SHA-256 manifest remains the universal, platform-independent DETECTION layer. An
+unsupported filesystem (`ENOTSUP`/`EOPNOTSUPP`/`ENOTTY` — overlayfs, many network
+mounts) degrades to detection-only and `lock` says so per file.
 
 ### verify.go — verification + granular read exit codes
 ```go
@@ -218,10 +247,19 @@ path re-resolution between create and rename.
 
 **Freeze-then-hash ordering (lock).** For each file `lock` opens via the resolver,
 `LockFileFD` (fchown root:0 + fchmod 0444) FIRST, then seeks to 0 and hashes the
-now-frozen fd, then records the entry. There is no writable window on the inode
-after the hash is taken (it is already 444). All entries accumulate and a SINGLE
+now-frozen fd, then sets the immutable flag (`applyImmutable`), then records the
+entry. There is no writable window on the inode after the hash is taken (it is
+already 444, and immutable). All entries accumulate and a SINGLE
 `WriteManifestLocked` runs at the very end, so a mid-loop kill never publishes a
 manifest that asserts immutability over a not-yet-frozen file.
+
+**Immutable flag vs the rename-based publish.** A permanently-immutable target
+cannot be replaced by rename — which the atomic manifest publish relies on. So
+`WriteManifestLocked` clears the live manifest's flag before the `Renameat`
+over it, then re-applies the flag to the freshly published manifest; the
+golden-file paths (`UnlockFileFD`, and the emptied-manifest `os.Remove`) likewise
+clear the flag before their privileged mutation. Each clear→mutate→set window is
+root-only and momentary, and never weaker than the pre-feature state.
 
 **verify → exit-code mapping** (precedence): absent/malformed lockfile (3)
 dominates — detected before per-entry checks, returns `nil` results. Among
@@ -234,7 +272,8 @@ prints results and returns that code.
   with `ExitWriteIO (6)` and is never overwritten; only a genuinely absent
   (`os.IsNotExist`) manifest starts fresh. For each file → `resolveNoSymlink`
   once (O_RDWR, full component walk), `LockFileFD` (fchown root:0 + fchmod 0444)
-  FIRST, then seek-0 + hash the now-frozen fd, then `Manifest.Upsert` in memory.
+  FIRST, then seek-0 + hash the now-frozen fd, then `applyImmutable` (per-file
+  warning if the filesystem can't store the flag), then `Manifest.Upsert` in memory.
   After ALL files are frozen, a SINGLE `WriteManifestLocked` (repo-root dir-fd →
   temp via Openat → root:0/444 → Renameat in that dir-fd; live manifest stays 444
   throughout). This freeze-then-hash + single-publish ordering closes the
