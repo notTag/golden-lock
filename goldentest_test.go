@@ -636,6 +636,9 @@ func TestRunLock_FreezesBeforeRecording(t *testing.T) {
 	if code := runLock([]string{rel}); code != ExitWriteOK {
 		t.Fatalf("runLock: code = %d, want %d", code, ExitWriteOK)
 	}
+	// lock makes the file + manifest immutable; clear that (via unlock) before
+	// t.TempDir's RemoveAll runs, or cleanup cannot delete the immutable inodes.
+	t.Cleanup(func() { _ = runUnlock([]string{rel}) })
 
 	// The file must be 0444 (frozen).
 	fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
@@ -665,6 +668,50 @@ func TestRunLock_FreezesBeforeRecording(t *testing.T) {
 	}
 	if perm := mfi.Mode().Perm(); perm != LockedMode {
 		t.Errorf("manifest perm = %#o, want %#o", perm, LockedMode)
+	}
+}
+
+// TestRunLock_ImmutableBlocksRename is the regression test for the core bug:
+// chmod 0444 + root ownership did NOT stop replace-by-rename (write a sibling
+// temp, rename it over the target — needs only directory write permission), so
+// an editor/agent could silently swap a locked golden file. After lock sets the
+// filesystem immutable flag, that rename must fail. Requires real root; if the
+// filesystem can't store the flag, lock degrades to detection-only and the
+// rename succeeds, so we skip rather than fail.
+func TestRunLock_ImmutableBlocksRename(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("not root: lock's chown-to-root + immutable flag require real root")
+	}
+	root := fakeRepo(t)
+	rel := "tests/golden.txt"
+	const original = "original golden assertion"
+	abs := writeFile(t, root, rel, original)
+
+	chdirTo(t, root)
+	if code := runLock([]string{rel}); code != ExitWriteOK {
+		t.Fatalf("runLock: code = %d, want %d", code, ExitWriteOK)
+	}
+	t.Cleanup(func() { _ = runUnlock([]string{rel}) })
+
+	// The replace-by-rename attack: a fresh sibling file renamed over the locked
+	// target. This is exactly how Edit/most editors write.
+	attack := filepath.Join(root, "tests", "attack.tmp")
+	if err := os.WriteFile(attack, []byte("tampered assertion"), 0o644); err != nil {
+		t.Fatalf("write attack temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(attack) })
+
+	if err := os.Rename(attack, abs); err == nil {
+		t.Skip("filesystem does not enforce the immutable flag; rename-replace not prevented (detection-only)")
+	}
+
+	// Rename was refused — the locked content must be intact and unchanged.
+	got, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatalf("read locked file after blocked rename: %v", err)
+	}
+	if string(got) != original {
+		t.Errorf("locked golden content changed despite immutable flag: %q, want %q", got, original)
 	}
 }
 

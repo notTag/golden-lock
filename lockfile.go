@@ -340,12 +340,61 @@ func writeManifestFile(m *Manifest, lockResult bool) error {
 		return err
 	}
 
+	// An immutable live manifest cannot be replaced by rename, so clear its flag
+	// first (privileged path only). A first-ever lock (no live manifest) or an
+	// unsupported filesystem is a no-op.
+	if lockResult {
+		clearLiveManifestImmutable(dirFD)
+	}
+
 	// Renameat within the same dir-fd: no path string is re-resolved, so a
 	// parent-directory symlink swap between create and rename has no effect.
 	if err := sysRenameat(int(dirFD.Fd()), tmpBase, int(dirFD.Fd()), LockfileName); err != nil {
 		return err
 	}
 	cleanup = false
+
+	// Re-apply immutability to the freshly published manifest. There is a brief
+	// window between rename and this call where the manifest is 0444-but-mutable;
+	// it is no weaker than the manifest's permanent state before this feature, and
+	// the manifest is root-owned throughout.
+	if lockResult {
+		if err := setLiveManifestImmutable(dirFD); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// clearLiveManifestImmutable best-effort clears the immutable flag on the
+// current live manifest inside dirFD so the atomic rename may replace it. Absent
+// manifest (ENOENT) or an unsupported filesystem is a silent no-op; a swapped
+// non-regular/symlink manifest is left for the rename to surface.
+func clearLiveManifestImmutable(dirFD *os.File) {
+	fd, err := sysOpenat(int(dirFD.Fd()), LockfileName,
+		syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return
+	}
+	f := os.NewFile(uintptr(fd), LockfileName)
+	_ = clearImmutable(f)
+	f.Close()
+}
+
+// setLiveManifestImmutable sets the immutable flag on the freshly published live
+// manifest inside dirFD. An unsupported filesystem degrades silently (the hash
+// manifest still provides detection); a genuine failure is returned.
+func setLiveManifestImmutable(dirFD *os.File) error {
+	fd, err := sysOpenat(int(dirFD.Fd()), LockfileName,
+		syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(fd), LockfileName)
+	defer f.Close()
+	if _, err := applyImmutable(f); err != nil {
+		return err
+	}
 	return nil
 }
 

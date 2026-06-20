@@ -97,6 +97,7 @@ func runLock(args []string) int {
 	type locked struct {
 		relPath, hash string
 		f             *os.File
+		immutable     bool // false when the filesystem cannot store the flag
 	}
 	pending := make([]locked, 0, len(args))
 	defer func() {
@@ -143,7 +144,16 @@ func runLock(args []string) int {
 			fmt.Fprintf(os.Stderr, "%s lock: cannot read %q: %v\n", progName(), f, err)
 			return ExitWriteIO
 		}
-		pending = append(pending, locked{relPath: relPath, hash: hash, f: fh})
+		// Set the filesystem immutable flag so the inode can't be replaced by
+		// rename (the gap chmod 0444 alone leaves open). An unsupported
+		// filesystem degrades to detection-only rather than failing the lock.
+		immutable, err := applyImmutable(fh)
+		if err != nil {
+			fh.Close()
+			fmt.Fprintf(os.Stderr, "%s lock: cannot set immutable flag on %q: %v\n", progName(), f, err)
+			return ExitWriteIO
+		}
+		pending = append(pending, locked{relPath: relPath, hash: hash, f: fh, immutable: immutable})
 	}
 
 	// All files are now frozen 0444. Build the manifest in memory and emit drift
@@ -168,7 +178,11 @@ func runLock(args []string) int {
 	}
 
 	for _, p := range pending {
-		fmt.Printf("locked %s\n", p.relPath)
+		if p.immutable {
+			fmt.Printf("locked %s\n", p.relPath)
+		} else {
+			fmt.Printf("locked %s  (warning: this filesystem does not support the immutable flag; tamper is detected by `verify` but not prevented)\n", p.relPath)
+		}
 	}
 	return ExitWriteOK
 }
@@ -252,6 +266,13 @@ func runUnlock(args []string) int {
 	// a vacuously-OK empty manifest (#9). The live manifest is 444; removing it
 	// only needs write permission on the (operator-owned) repo-root directory.
 	if len(m.Entries) == 0 {
+		// The live manifest is root:0444 and (where supported) immutable; clear
+		// the flag first or the unlink below is refused. Open via the
+		// symlink-free resolver so a swapped manifest symlink can't redirect us.
+		if mf, err := resolveNoSymlink(root, LockfileName, m.Path, os.O_RDONLY); err == nil {
+			_ = clearImmutable(mf)
+			mf.Close()
+		}
 		if err := os.Remove(m.Path); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "%s unlock: cannot remove emptied manifest: %v\n", progName(), err)
 			return ExitWriteIO
