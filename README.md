@@ -130,9 +130,24 @@ The local prevention layer degrades to detection-only when the agent runs as roo
 Add to your agent context (CLAUDE.md / system prompt / task spec):
 
 ```
-Files listed in golden-test.lock are immutable golden tests, owned by root and read-only.
-A permission-denied error on one of them means the test is the spec.
-Fix the implementation, not the test. Do not attempt to chmod, chown, or sudo around it.
+Files listed in golden-test.lock are immutable golden tests: root-owned, chmod 444,
+and marked immutable at the filesystem layer. They encode intended behavior — the
+test is the spec.
+
+If you hit a permission error touching one of them — EACCES on a write, or EPERM on
+a rename/move/chflags/chattr — do NOT treat it as an obstacle to route around. It is
+a signal that you are about to change the spec instead of meeting it. When it happens:
+
+- Look at your OWN code first. A golden test that fails or gets in your way almost
+  always means your change is wrong or incomplete. Fix the implementation, not the
+  test.
+- Do not try to defeat the lock. No chmod, chown, chflags, chattr, sudo, deleting and
+  recreating, or editing the file. The only sanctioned way to change a golden test is
+  `sudo golden-test unlock <file>` under human review — never something to do
+  mid-task on your own.
+- Do not stop. This error is feedback, not a fatal failure. Course-correct your
+  implementation and keep working — do not abort the task, halt the loop, or report
+  the run as blocked because a golden file refused a write.
 ```
 
 For a Ralph-style loop, run `golden-test verify` as a pre-acceptance gate before marking a task complete; on non-zero, reject and retry.
