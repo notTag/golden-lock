@@ -1,6 +1,6 @@
 package main
 
-// goldentest_test.go — happy-path + exit-code tests for golden-test.
+// goldenlock_test.go — happy-path + exit-code tests for golden-lock.
 //
 // Privilege model under test:
 //   - Read path (hashing, manifest parse, Verify) needs no privilege and is
@@ -75,7 +75,7 @@ func goldenHash(relPath, content string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// writeManifest writes a golden-test.lock with the given raw body at root.
+// writeManifest writes a golden.lock with the given raw body at root.
 func writeManifest(t *testing.T, root, body string) {
 	t.Helper()
 	if err := os.WriteFile(LockfilePath(root), []byte(body), 0o644); err != nil {
@@ -584,7 +584,7 @@ func TestResolver_RejectsParentDirSymlink(t *testing.T) {
 	}
 }
 
-// TestVerify_ManifestSymlinkRejected pins Vector B: if golden-test.lock itself
+// TestVerify_ManifestSymlinkRejected pins Vector B: if golden.lock itself
 // is a symlink to an attacker file (with forged hashes), verify must NOT trust
 // it. ReadManifest returns ErrManifestMalformed and Verify returns exit 3. No
 // privilege required.
@@ -601,7 +601,7 @@ func TestVerify_ManifestSymlinkRejected(t *testing.T) {
 		t.Fatalf("write forged manifest: %v", err)
 	}
 
-	// Point golden-test.lock at the forged file via a symlink.
+	// Point golden.lock at the forged file via a symlink.
 	if err := os.Symlink(forged, LockfilePath(root)); err != nil {
 		t.Skipf("symlink unsupported here: %v", err)
 	}
@@ -840,7 +840,7 @@ func TestManifestHeader_IsNotParsedAsEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}
-	if !strings.Contains(string(data), "# golden-test.lock") {
+	if !strings.Contains(string(data), "# golden.lock") {
 		t.Error("manifest missing header comment")
 	}
 	back, err := ReadManifest(root)
