@@ -1,6 +1,6 @@
 # [002] Skill: scan project for core functionality and propose lock candidates
 
-- Status: open
+- Status: in-progress
 - Created: 2026-06-20
 - Priority: med
 - Bump: minor
