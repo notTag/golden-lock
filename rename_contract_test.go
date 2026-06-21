@@ -77,9 +77,9 @@ func TestContract_DispatchMatrix(t *testing.T) {
 	}
 }
 
-// TestContract_ProgName is a TRIPWIRE on the user-facing program name. The
-// rename to golden-lock is EXPECTED to break this test — update the wants here
-// deliberately (base name and the alias) so the rebrand is a conscious edit.
+// TestContract_ProgName is a TRIPWIRE on the user-facing program name. It pins
+// the post-rename identity: base name "golden-lock" and the short alias "gl".
+// Any future drift to these user-facing names must be a conscious edit here.
 func TestContract_ProgName(t *testing.T) {
 	savedArgs := os.Args
 	t.Cleanup(func() { os.Args = savedArgs })
@@ -89,10 +89,10 @@ func TestContract_ProgName(t *testing.T) {
 		argv0 []string
 		want  string
 	}{
-		{"base", []string{"golden-test"}, "golden-test"},
-		{"alias", []string{"gt"}, "gt"},
-		{"full-path", []string{"/usr/local/bin/golden-test"}, "golden-test"},
-		{"empty-argv", []string{}, "golden-test"},
+		{"base", []string{"golden-lock"}, "golden-lock"},
+		{"alias", []string{"gl"}, "gl"},
+		{"full-path", []string{"/usr/local/bin/golden-lock"}, "golden-lock"},
+		{"empty-argv", []string{}, "golden-lock"},
 	}
 	for _, c := range cases {
 		os.Args = c.argv0
@@ -103,12 +103,13 @@ func TestContract_ProgName(t *testing.T) {
 }
 
 // TestContract_LockfileNameStable is a TRIPWIRE on the manifest filename. This
-// is the trust-anchor on disk: every already-locked repo carries a file by this
-// exact name. If the rename changes it (e.g. to "golden-lock.lock"), EVERY
-// existing locked repo silently loses its manifest until migrated. Do not flip
-// this casually — change it here only alongside a documented migration path.
+// is the trust-anchor on disk: every locked repo carries a file by this exact
+// name, and FindRepoRoot treats it as a repo-root marker. It was renamed once
+// (golden-test.lock -> golden.lock) with no back-compat, since the tool had a
+// single user and no repos to migrate. Any further change must be deliberate:
+// flipping the name orphans every already-locked repo's manifest.
 func TestContract_LockfileNameStable(t *testing.T) {
-	const want = "golden-test.lock"
+	const want = "golden.lock"
 	if LockfileName != want {
 		t.Errorf("LockfileName = %q, want %q — changing the manifest filename breaks "+
 			"every already-locked repo; require an explicit migration before editing this", LockfileName, want)

@@ -1,4 +1,4 @@
-module golden-test
+module golden-lock
 
 go 1.26
 

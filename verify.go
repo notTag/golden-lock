@@ -7,7 +7,7 @@ package main
 //	0 — all hashes match
 //	1 — at least one hash mismatch
 //	2 — at least one listed file is missing
-//	3 — golden-test.lock absent or malformed
+//	3 — golden.lock absent or malformed
 //
 // Precedence when multiple conditions occur: malformed/absent lockfile (3)
 // dominates (it is detected before per-entry checks); among per-entry results,
