@@ -75,10 +75,16 @@ func goldenHash(relPath, content string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// writeManifest writes a golden.lock with the given raw body at root.
+// writeManifest writes a golden.lock with the given raw body at its canonical
+// location (<root>/golden-lock/golden.lock), creating the golden-lock dir if
+// absent.
 func writeManifest(t *testing.T, root, body string) {
 	t.Helper()
-	if err := os.WriteFile(LockfilePath(root), []byte(body), 0o644); err != nil {
+	path := LockfilePath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir golden-lock: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
 }
@@ -475,10 +481,18 @@ func TestDispatch_UnlockNotRoot(t *testing.T) {
 	}
 }
 
+// feat-005: `lock` with no args no longer means "arg error" — it sources files
+// from golden-lock/proposal-locks/. The privilege gate still runs first, so a
+// non-root invocation returns not-root. The "nothing listed" arg-error path is
+// only reachable as root; the gathering logic itself is covered in
+// proposal_locks_test.go.
 func TestDispatch_LockNoArgs(t *testing.T) {
+	if IsRoot() {
+		t.Skip("running as root: the no-args path proceeds to proposal-locks gathering")
+	}
 	code := dispatch([]string{"lock"})
-	if code != ExitWriteArgs {
-		t.Errorf("lock with no args: code = %d, want %d", code, ExitWriteArgs)
+	if code != ExitWriteNotRoot {
+		t.Errorf("lock with no args (non-root): code = %d, want %d", code, ExitWriteNotRoot)
 	}
 }
 

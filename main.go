@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // main.go — CLI entrypoint and argument routing.
@@ -46,14 +47,75 @@ func progName() string {
 	return "golden-lock"
 }
 
-// runLock implements `lock <file>...`: discover repo root, hash each file,
-// upsert manifest entries, persist the manifest, then lock the files + the
-// manifest. Returns a write exit code.
-func runLock(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "%s lock: no files given\n", progName())
-		return ExitWriteArgs
+// ProposalLocksDir is the GoldenLockDir subdirectory whose files each hold a
+// newline-separated list of repo paths to lock — i.e. golden-lock/proposal-locks/.
+// `lock` with no file arguments locks the union of every path listed across
+// these files.
+const ProposalLocksDir = "proposal-locks"
+
+// gatherProposalLocks reads every list file under <root>/golden-lock/proposal-locks/
+// and returns the absolute paths of the files they reference. Lines are trimmed;
+// blank lines, dotfiles, and subdirectories are ignored. A listed path that does
+// not exist (or escapes the repo root) is reported to stderr and skipped rather
+// than failing the whole lock. Duplicates are collapsed so a file listed twice is
+// only frozen once. An absent proposal-locks/ dir yields no paths.
+func gatherProposalLocks(root string) ([]string, error) {
+	dir := filepath.Join(root, GoldenLockDir, ProposalLocksDir)
+	listFiles, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
+
+	var paths []string
+	seen := make(map[string]bool)
+	for _, listFile := range listFiles {
+		name := listFile.Name()
+		if listFile.IsDir() || strings.HasPrefix(name, ".") {
+			continue
+		}
+		listPath := filepath.Join(dir, name)
+		data, err := os.ReadFile(listPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", listPath, err)
+		}
+		for _, rawLine := range strings.Split(string(data), "\n") {
+			line := strings.TrimSpace(rawLine)
+			if line == "" {
+				continue
+			}
+			var abs string
+			if filepath.IsAbs(line) {
+				abs = filepath.Clean(line)
+			} else {
+				abs = filepath.Join(root, filepath.FromSlash(line))
+			}
+			relPath, err := NormalizePath(root, abs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "note: %s lists %q which is not a valid repo path; skipping: %v\n", name, line, err)
+				continue
+			}
+			if _, err := os.Stat(abs); err != nil {
+				fmt.Fprintf(os.Stderr, "note: %s lists %q but it was not found; skipping\n", name, line)
+				continue
+			}
+			if seen[relPath] {
+				continue
+			}
+			seen[relPath] = true
+			paths = append(paths, abs)
+		}
+	}
+	return paths, nil
+}
+
+// runLock implements `lock [<file>...]`: discover repo root, hash each file,
+// upsert manifest entries, persist the manifest, then lock the files + the
+// manifest. With no file arguments, the lock set is gathered from
+// golden-lock/proposal-locks/. Returns a write exit code.
+func runLock(args []string) int {
 	if !IsRoot() {
 		fmt.Fprintf(os.Stderr, "%s lock: must run as root (use sudo)\n", progName())
 		return ExitWriteNotRoot
@@ -68,6 +130,22 @@ func runLock(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s lock: cannot find repo root: %v\n", progName(), err)
 		return ExitWriteArgs
+	}
+
+	// No explicit files → lock everything listed under golden-lock/proposal-locks/
+	// (each file there is a newline-separated list of repo paths). Missing listed
+	// files are reported and skipped, not fatal (feat-005).
+	proposalLocksRel := filepath.Join(GoldenLockDir, ProposalLocksDir)
+	if len(args) == 0 {
+		args, err = gatherProposalLocks(root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s lock: cannot read %s/: %v\n", progName(), proposalLocksRel, err)
+			return ExitWriteIO
+		}
+		if len(args) == 0 {
+			fmt.Fprintf(os.Stderr, "%s lock: no files given and %s/ lists none\n", progName(), proposalLocksRel)
+			return ExitWriteArgs
+		}
 	}
 
 	// Distinguish a genuinely absent manifest (start fresh) from a present but
@@ -269,7 +347,7 @@ func runUnlock(args []string) int {
 		// The live manifest is root:0444 and (where supported) immutable; clear
 		// the flag first or the unlink below is refused. Open via the
 		// symlink-free resolver so a swapped manifest symlink can't redirect us.
-		if mf, err := resolveNoSymlink(root, LockfileName, m.Path, os.O_RDONLY); err == nil {
+		if mf, err := resolveNoSymlink(root, LockfileRelPath, m.Path, os.O_RDONLY); err == nil {
 			_ = clearImmutable(mf)
 			mf.Close()
 		}
@@ -350,8 +428,9 @@ USAGE:
     %s <command> [arguments]
 
 COMMANDS:
-    lock   <file>...   Hash each file, record it in %s, then root-own + chmod 444
-                       the file(s) and the manifest. Requires sudo.
+    lock   [<file>...] Hash each file, record it in %s, then root-own + chmod 444
+                       the file(s) and the manifest. Requires sudo. With no
+                       files, locks every path listed under %s/.
     unlock <file>...   Remove file(s) from the manifest and restore writable
                        ownership/permissions. Requires sudo.
     verify             Recompute the SHA-256 of every manifest entry and compare.
@@ -360,7 +439,7 @@ COMMANDS:
 EXIT CODES:
     verify:  0 ok | 1 hash mismatch | 2 missing file | 3 absent/malformed manifest
     lock/unlock:  0 ok | 4 not root | 5 arg error | 6 io failure
-`, p, p, LockfileName)
+`, p, p, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir))
 }
 
 // dispatch routes argv (excluding the program name) to the matching run* func
