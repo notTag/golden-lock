@@ -1,9 +1,9 @@
-# golden-test — Architecture & Frozen Contract
+# golden-lock — Architecture & Frozen Contract
 
-Module path: `golden-test` · Go 1.26 · stdlib only · flat layout, all `package main`.
+Module path: `golden-lock` · Go 1.26 · stdlib only · flat layout, all `package main`.
 Targets: linux/amd64, darwin/amd64, darwin/arm64.
 
-Base binary `golden-test`, alias dispatch name `gt`. Three subcommands only:
+Base binary `golden-lock`, alias dispatch name `gl`. Three subcommands only:
 `lock <file>...` (sudo), `unlock <file>...` (sudo), `verify` (no privilege).
 
 The signatures below are the FROZEN CONTRACT. Parallel implementers fill the
@@ -79,7 +79,7 @@ which the stdlib `syscall` package does not export on macOS.
 
 ### lockfile.go — manifest model, repo-root discovery, path normalization
 ```go
-const LockfileName = "golden-test.lock"
+const LockfileName = "golden.lock"
 
 var ErrManifestMalformed error // present-but-corrupt manifest (use errors.Is)
 
@@ -90,7 +90,7 @@ type Entry struct {
 
 type Manifest struct {
 	Root    string  // absolute repo-root dir
-	Path    string  // absolute path to golden-test.lock
+	Path    string  // absolute path to golden.lock
 	Entries []Entry // manifest order
 }
 
@@ -216,13 +216,13 @@ entries in `Manifest.Entries` order (two spaces as the separator).
 `git rev-parse --show-toplevel` probe runs ONLY when unprivileged, and resolves
 git from a fixed vetted list (`/usr/bin/git`, …) with a pinned `PATH`, never the
 inherited PATH. Under root it is skipped entirely, relying on the nearest
-`.git`/`golden-test.lock` ancestor walk so no untrusted binary runs as root.
+`.git`/`golden.lock` ancestor walk so no untrusted binary runs as root.
 `NormalizePath` resolves any input (abs or cwd-relative) to the
 repo-root-relative cleaned form and errors if it escapes the root.
 `Manifest.AbsPath` is the inverse (rel → abs under `Root`).
 
 Known residual (documented, not a symlink-follow): root *selection* trusts
-path-based `os.Stat` for the `.git`/`golden-test.lock` markers, so an attacker
+path-based `os.Stat` for the `.git`/`golden.lock` markers, so an attacker
 who can plant such a marker may influence WHICH directory is chosen as the root.
 This cannot induce a symlink-follow (the chosen root is still opened through the
 O_NOFOLLOW canonical walk above) and cannot launder a root-owned `0444` hash
@@ -238,11 +238,11 @@ symlinked or non-directory component, down to the leaf. `verify`, `lock`, and
 `unlock` all open golden files this way against the explicit repo root, so a
 swapped parent/intermediate directory cannot relocate the inode that is hashed or
 frozen. The manifest is read the same way (a symlinked/non-regular
-`golden-test.lock` is hard-rejected as malformed → exit 3; a present-but-non-root
+`golden.lock` is hard-rejected as malformed → exit 3; a present-but-non-root
 manifest only WARNS, since pre-apply/dev machines are legitimately non-root). The
 manifest WRITE opens the repo-root dir-fd, creates the temp with `Openat` inside
 it, fchown root:0 + fchmod 444 the temp fd, then `Renameat(dirfd, tmp, dirfd,
-"golden-test.lock")` — the anchor lands in the verified directory inode with no
+"golden.lock")` — the anchor lands in the verified directory inode with no
 path re-resolution between create and rename.
 
 **Freeze-then-hash ordering (lock).** For each file `lock` opens via the resolver,
@@ -296,7 +296,7 @@ require none — CI runs `verify` with no sudo. `SudoUID` reads `SUDO_UID`/
 `SUDO_GID` (fallback to real uid/gid) for unlock ownership restore.
 
 **Dispatch.** `dispatch(args)` matches `args[0]` to `lock`/`unlock`/`verify`;
-`--help`/`-h`/empty/unknown → `usage()`. Alias `gt` vs `golden-test` affects only
+`--help`/`-h`/empty/unknown → `usage()`. Alias `gl` vs `golden-lock` affects only
 help text (`progName()` from argv[0] basename), not routing.
 
 **Build gate.** `go build ./...` and `go vet ./...` pass on stubs (verified).

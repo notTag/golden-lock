@@ -152,7 +152,7 @@ Print one row per Core candidate, ranked:
 Follow the table with a short, plain-language plan:
 - which **Covered** core tests are ready to hand to `/golden-test` as-is,
 - which **Uncovered** items need a test written before anything can be locked,
-- the eventual `golden-test lock` command for the ready set.
+- the eventual `golden-lock lock` command for the ready set.
 
 Then **STOP**. End with an explicit handoff line, e.g.:
 
