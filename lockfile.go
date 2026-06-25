@@ -1,6 +1,6 @@
 package main
 
-// lockfile.go — golden-test.lock manifest model: parse/read/write,
+// lockfile.go — golden.lock manifest model: parse/read/write,
 // repo-root discovery, and path normalization.
 //
 // Manifest line format (one entry per line):
@@ -27,7 +27,7 @@ import (
 )
 
 // LockfileName is the fixed manifest filename, expected at the repo root.
-const LockfileName = "golden-test.lock"
+const LockfileName = "golden.lock"
 
 // ErrManifestMalformed is the sentinel returned by ReadManifest when the
 // manifest file exists but cannot be parsed (e.g. a malformed entry line).
@@ -41,19 +41,19 @@ type Entry struct {
 	Path string // repo-root-relative, forward-slash, normalized
 }
 
-// Manifest is the parsed in-memory model of a golden-test.lock file.
+// Manifest is the parsed in-memory model of a golden.lock file.
 // Root is the absolute repo-root directory the relative Entry paths resolve against.
 // Path is the absolute path to the manifest file on disk.
 type Manifest struct {
 	Root    string  // absolute repo-root directory
-	Path    string  // absolute path to the golden-test.lock file
+	Path    string  // absolute path to the golden.lock file
 	Entries []Entry // tracked entries, in manifest order
 }
 
 // FindRepoRoot discovers the repository root starting from the given directory,
 // walking upward. Discovery prefers `git rev-parse --show-toplevel`; if git is
 // unavailable it falls back to the nearest ancestor containing a .git entry or
-// an existing golden-test.lock. Returns the absolute repo-root path.
+// an existing golden.lock. Returns the absolute repo-root path.
 func FindRepoRoot(startDir string) (string, error) {
 	abs, err := filepath.Abs(startDir)
 	if err != nil {
@@ -64,7 +64,7 @@ func FindRepoRoot(startDir string) (string, error) {
 	// Under root (the sudo lock/unlock paths), exec'ing a git resolved from an
 	// attacker-influenced PATH would run an untrusted binary with full
 	// privilege (#8). In that case skip the probe entirely and rely on the
-	// .git / golden-test.lock ancestor walk below, which touches no external
+	// .git / golden.lock ancestor walk below, which touches no external
 	// binary. When unprivileged (verify), resolve git from a sanitized,
 	// well-known set of system locations rather than the inherited PATH.
 	if !IsRoot() {
@@ -254,9 +254,9 @@ func ReadManifest(root string) (*Manifest, error) {
 // manifestBody serializes the manifest header + entries to a string.
 func manifestBody(m *Manifest) string {
 	var b strings.Builder
-	b.WriteString("# golden-test.lock — DO NOT EDIT BY HAND.\n")
+	b.WriteString("# golden.lock — DO NOT EDIT BY HAND.\n")
 	b.WriteString("# Format: <sha256>  <repo-root-relative-path>\n")
-	b.WriteString("# Managed by golden-test; verify with `golden-test verify`.\n")
+	b.WriteString("# Managed by golden-lock; verify with `golden-lock verify`.\n")
 	for _, e := range m.Entries {
 		b.WriteString(e.Hash)
 		b.WriteString("  ")
@@ -308,7 +308,7 @@ func writeManifestFile(m *Manifest, lockResult bool) error {
 	}
 	defer dirFD.Close()
 
-	tmpBase, tmp, err := createTempAt(dirFD, ".golden-test.lock.")
+	tmpBase, tmp, err := createTempAt(dirFD, ".golden.lock.")
 	if err != nil {
 		return err
 	}

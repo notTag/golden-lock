@@ -10,14 +10,14 @@ import (
 
 // main.go — CLI entrypoint and argument routing.
 //
-// Invoked as either "golden-test" or the alias "gt" (dispatch is by subcommand,
+// Invoked as either "golden-lock" or the alias "gl" (dispatch is by subcommand,
 // not by argv[0]; the basename is accepted for help/usage text only).
 //
 // Subcommands (happy-path build):
 //
-//	golden-test lock   <file>...   sudo — hash each file, record in manifest, lock files + manifest
-//	golden-test unlock <file>...   sudo — remove from manifest, restore writable ownership/perms
-//	golden-test verify             no priv — recompute + compare every entry
+//	golden-lock lock   <file>...   sudo — hash each file, record in manifest, lock files + manifest
+//	golden-lock unlock <file>...   sudo — remove from manifest, restore writable ownership/perms
+//	golden-lock verify             no priv — recompute + compare every entry
 //
 // Write exit codes (lock/unlock):
 //
@@ -34,16 +34,16 @@ const (
 )
 
 // progName returns the user-facing program name derived from argv[0]
-// ("golden-test" or "gt"), used only in usage/help output.
+// ("golden-lock" or "gl"), used only in usage/help output.
 func progName() string {
 	if len(os.Args) == 0 {
-		return "golden-test"
+		return "golden-lock"
 	}
 	base := filepath.Base(os.Args[0])
-	if base == "gt" {
-		return "gt"
+	if base == "gl" {
+		return "gl"
 	}
-	return "golden-test"
+	return "golden-lock"
 }
 
 // runLock implements `lock <file>...`: discover repo root, hash each file,
@@ -344,7 +344,7 @@ func runVerify(args []string) int {
 // unknown subcommand.
 func usage() {
 	p := progName()
-	fmt.Fprintf(os.Stderr, `%s — make golden test files immutable so assertions can't be gamed
+	fmt.Fprintf(os.Stderr, `%s — make chosen files immutable so they can't be silently changed
 
 USAGE:
     %s <command> [arguments]

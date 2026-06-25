@@ -7,7 +7,7 @@ description: |
   public-API contracts), and emit a table marking which should be immutable
   "golden" tests. Recommends core tests that should be broken out into their
   own files, and on confirmation extracts each into a `<name>.golden.<ext>`
-  sibling and locks it with the `golden-test` binary (root-owned 444 +
+  sibling and locks it with the `golden-lock` binary (root-owned 444 +
   filesystem immutable flag + SHA-256 manifest). Trigger on "/golden-test", "find golden tests",
   "which tests should be immutable", "lock my core tests".
 allowed-tools:
@@ -22,7 +22,7 @@ allowed-tools:
 
 # golden-test: designate & enforce immutable core tests
 
-Companion workflow for the `golden-test` CLI (this repo). The CLI makes a test
+Companion workflow for the `golden-lock` CLI (this repo). The CLI makes a test
 file immutable so an AI coding agent can't game "all tests pass" by editing the
 assertion. This skill is the human/agent-facing front end: it **finds** the
 tests worth protecting, **classifies** them, **breaks** the core ones into their
@@ -38,7 +38,7 @@ the implementation, never the test.**
 3. REPORT — table of tests, immutability verdict, and break-out recommendations.
 4. CONFIRM — ask the user which core tests to act on (nothing destructive before this).
 5. BREAK OUT — extract each chosen core test into a `<name>.golden.<ext>` sibling, keep the build green.
-6. LOCK — `sudo golden-test lock` the new files, then `golden-test verify`.
+6. LOCK — `sudo golden-lock lock` the new files, then `golden-lock verify`.
 
 Run 1–3 read-only and always show the table before touching anything.
 
@@ -105,7 +105,7 @@ is already 100% core can be locked in place (note it as "lock in place, no
 break-out needed").
 
 End the report with a short plan: which files get created, which existing tests
-move, and the eventual `golden-test lock` command.
+move, and the eventual `golden-lock lock` command.
 
 ## 4. CONFIRM
 
@@ -147,8 +147,8 @@ Extraction steps per test:
 Once the golden siblings are green, freeze them with this repo's CLI:
 
 ```sh
-sudo golden-test lock <each new .golden file>   # root-own + chmod 444 + immutable flag + record SHA-256 in golden-test.lock
-golden-test verify                              # read-only gate, exit 0 == all hashes match
+sudo golden-lock lock <each new .golden file>   # root-own + chmod 444 + immutable flag + record SHA-256 in golden.lock
+golden-lock verify                              # read-only gate, exit 0 == all hashes match
 ```
 
 `lock` also sets the filesystem immutable flag (`chflags schg` / `chattr +i`),
@@ -157,15 +157,15 @@ replace-by-rename (the write-temp-then-rename most editors and agent file tools
 use). On a filesystem that can't store the flag, `lock` prints a per-file warning
 and falls back to detection-only (the manifest + CI `verify` still catch drift).
 
-`lock` also locks `golden-test.lock` itself (root-owned 444) — that's the trust
+`lock` also locks `golden.lock` itself (root-owned 444) — that's the trust
 anchor. After locking, remind the user to:
-- commit `golden-test.lock`,
-- add `golden-test verify` to CI as a hard gate,
+- commit `golden.lock`,
+- add `golden-lock verify` to CI as a hard gate,
 - pin the golden paths in `.gitattributes` (`* text=auto eol=lf`) so checkout
   byte-rewrites don't cause a spurious mismatch.
 
-If `golden-test` isn't on PATH, build it first: `go build -o golden-test .` in the
-repo root (or point at `./golden-test`).
+If `golden-lock` isn't on PATH, build it first: `go build -o golden-lock .` in the
+repo root (or point at `./golden-lock`).
 
 ## Guardrails
 
