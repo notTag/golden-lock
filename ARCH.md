@@ -79,7 +79,9 @@ which the stdlib `syscall` package does not export on macOS.
 
 ### lockfile.go — manifest model, repo-root discovery, path normalization
 ```go
-const LockfileName = "golden.lock"
+const GoldenLockDir   = "golden-lock"            // houses the manifest + proposal-locks/
+const LockfileName    = "golden.lock"            // leaf name, inside GoldenLockDir
+const LockfileRelPath = "golden-lock/golden.lock" // repo-root-relative; fed to the resolver
 
 var ErrManifestMalformed error // present-but-corrupt manifest (use errors.Is)
 
@@ -90,7 +92,7 @@ type Entry struct {
 
 type Manifest struct {
 	Root    string  // absolute repo-root dir
-	Path    string  // absolute path to golden.lock
+	Path    string  // absolute path to the manifest (<root>/golden-lock/golden.lock)
 	Entries []Entry // manifest order
 }
 
@@ -216,13 +218,21 @@ entries in `Manifest.Entries` order (two spaces as the separator).
 `git rev-parse --show-toplevel` probe runs ONLY when unprivileged, and resolves
 git from a fixed vetted list (`/usr/bin/git`, …) with a pinned `PATH`, never the
 inherited PATH. Under root it is skipped entirely, relying on the nearest
-`.git`/`golden.lock` ancestor walk so no untrusted binary runs as root.
-`NormalizePath` resolves any input (abs or cwd-relative) to the
+`.git`/`golden-lock/golden.lock` ancestor walk so no untrusted binary runs as
+root. `NormalizePath` resolves any input (abs or cwd-relative) to the
 repo-root-relative cleaned form and errors if it escapes the root.
 `Manifest.AbsPath` is the inverse (rel → abs under `Root`).
 
+**Manifest location.** The manifest and the `proposal-locks/` list files live
+under `<root>/golden-lock/`; `LockfilePath` returns
+`<root>/golden-lock/golden.lock`. The privileged write path creates the
+`golden-lock/` dir on first lock and resolves it to a dir-fd through the same
+O_NOFOLLOW walk, so the `golden-lock` segment is symlink-verified like any other
+component. `LockfileName` (the leaf) is unchanged, so the name-stability
+tripwire still holds; only the path gained the `golden-lock/` segment.
+
 Known residual (documented, not a symlink-follow): root *selection* trusts
-path-based `os.Stat` for the `.git`/`golden.lock` markers, so an attacker
+path-based `os.Stat` for the `.git`/`golden-lock/golden.lock` markers, so an attacker
 who can plant such a marker may influence WHICH directory is chosen as the root.
 This cannot induce a symlink-follow (the chosen root is still opened through the
 O_NOFOLLOW canonical walk above) and cannot launder a root-owned `0444` hash
@@ -240,10 +250,11 @@ swapped parent/intermediate directory cannot relocate the inode that is hashed o
 frozen. The manifest is read the same way (a symlinked/non-regular
 `golden.lock` is hard-rejected as malformed → exit 3; a present-but-non-root
 manifest only WARNS, since pre-apply/dev machines are legitimately non-root). The
-manifest WRITE opens the repo-root dir-fd, creates the temp with `Openat` inside
-it, fchown root:0 + fchmod 444 the temp fd, then `Renameat(dirfd, tmp, dirfd,
-"golden.lock")` — the anchor lands in the verified directory inode with no
-path re-resolution between create and rename.
+manifest WRITE creates `<root>/golden-lock/` if absent, opens THAT dir-fd (via the
+O_NOFOLLOW walk, so a symlinked golden-lock segment is rejected), creates the temp
+with `Openat` inside it, fchown root:0 + fchmod 444 the temp fd, then
+`Renameat(dirfd, tmp, dirfd, "golden.lock")` — the anchor lands in the verified
+golden-lock directory inode with no path re-resolution between create and rename.
 
 **Freeze-then-hash ordering (lock).** For each file `lock` opens via the resolver,
 `LockFileFD` (fchown root:0 + fchmod 0444) FIRST, then seeks to 0 and hashes the

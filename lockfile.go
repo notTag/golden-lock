@@ -26,8 +26,21 @@ import (
 	"unicode"
 )
 
-// LockfileName is the fixed manifest filename, expected at the repo root.
+// GoldenLockDir is the repo-root directory that holds golden-lock's state: the
+// manifest (LockfileName) and the proposal-locks list files. It is created on
+// the first lock if absent.
+const GoldenLockDir = "golden-lock"
+
+// LockfileName is the fixed manifest filename. It lives inside GoldenLockDir,
+// so its leaf name is used where a name relative to that dir-fd is needed
+// (Renameat/Openat), and LockfileRelPath where a repo-root-relative path is
+// needed (the symlink-free component walk).
 const LockfileName = "golden.lock"
+
+// LockfileRelPath is the manifest's repo-root-relative, forward-slash path:
+// "golden-lock/golden.lock". Pass this (not LockfileName) to the component-
+// walking resolver so the golden-lock segment is verified too.
+const LockfileRelPath = GoldenLockDir + "/" + LockfileName
 
 // ErrManifestMalformed is the sentinel returned by ReadManifest when the
 // manifest file exists but cannot be parsed (e.g. a malformed entry line).
@@ -92,7 +105,7 @@ func FindRepoRoot(startDir string) (string, error) {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 			return dir, nil
 		}
-		if _, err := os.Stat(filepath.Join(dir, LockfileName)); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, GoldenLockDir, LockfileName)); err == nil {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)
@@ -102,7 +115,7 @@ func FindRepoRoot(startDir string) (string, error) {
 		dir = parent
 	}
 
-	return "", fmt.Errorf("repo root not found from %q: no .git or %s ancestor", abs, LockfileName)
+	return "", fmt.Errorf("repo root not found from %q: no .git or %s ancestor", abs, LockfileRelPath)
 }
 
 // vettedGitPath returns an absolute path to a git binary from a fixed list of
@@ -123,9 +136,10 @@ func vettedGitPath() string {
 	return ""
 }
 
-// LockfilePath returns the absolute path to the manifest (root + LockfileName).
+// LockfilePath returns the absolute path to the manifest
+// (root/GoldenLockDir/LockfileName).
 func LockfilePath(root string) string {
-	return filepath.Join(root, LockfileName)
+	return filepath.Join(root, GoldenLockDir, LockfileName)
 }
 
 // NormalizePath converts an arbitrary input path (absolute or relative to the
@@ -189,11 +203,12 @@ func ReadManifest(root string) (*Manifest, error) {
 	// swapped for a symlink (to an attacker file with forged hashes) is rejected
 	// rather than trusted (Vector B). resolveNoSymlink also fstat-checks that the
 	// result is a regular file; a symlinked/non-regular manifest is a HARD reject.
-	f, err := resolveNoSymlink(root, LockfileName, path, os.O_RDONLY)
+	f, err := resolveNoSymlink(root, LockfileRelPath, path, os.O_RDONLY)
 	if err != nil {
 		if errors.Is(err, ErrSymlink) {
-			// A symlinked manifest must never be trusted. Surface as malformed so
-			// verify maps it to exit 3 and the write path refuses to overwrite.
+			// A symlinked manifest (or golden-lock dir) must never be trusted.
+			// Surface as malformed so verify maps it to exit 3 and the write path
+			// refuses to overwrite.
 			return nil, fmt.Errorf("%s: manifest is a symlink or non-regular file: %w", path, ErrManifestMalformed)
 		}
 		return nil, err
@@ -296,12 +311,19 @@ func writeManifestFile(m *Manifest, lockResult bool) error {
 
 	body := manifestBody(m)
 
-	// Resolve the manifest's PARENT directory (the repo root) to a dir-fd via the
-	// symlink-free walk, so a swapped repo-root/parent symlink cannot relocate the
-	// trust anchor between create and rename (Vector C). The temp is created with
-	// Openat IN that dir-fd, frozen via its own fd, then Renameat'd within the
-	// SAME dir-fd — no path re-resolution happens between create and rename, so
-	// the anchor lands in the verified directory inode.
+	// Ensure the manifest directory exists before resolving its dir-fd. A symlink
+	// planted at the golden-lock component is still caught by the O_NOFOLLOW walk
+	// below.
+	if err := os.MkdirAll(filepath.Join(m.Root, GoldenLockDir), 0o755); err != nil {
+		return err
+	}
+
+	// Resolve the manifest's PARENT directory (<root>/golden-lock) to a dir-fd via
+	// the symlink-free walk, so a swapped parent symlink cannot relocate the trust
+	// anchor between create and rename (Vector C). The temp is created with Openat
+	// IN that dir-fd, frozen via its own fd, then Renameat'd within the SAME dir-fd
+	// — no path re-resolution happens between create and rename, so the anchor
+	// lands in the verified directory inode.
 	dirFD, err := openManifestParentDir(m.Root)
 	if err != nil {
 		return err
@@ -398,12 +420,22 @@ func setLiveManifestImmutable(dirFD *os.File) error {
 	return nil
 }
 
-// openManifestParentDir opens the manifest's parent directory (the repo root)
-// as a dir-fd via the symlink-free walk. The manifest lives directly at the
-// repo root, so the parent IS the root; we open it with O_NOFOLLOW|O_DIRECTORY
-// so a symlinked root is rejected.
+// openManifestParentDir opens the manifest's parent directory
+// (<root>/golden-lock) as a dir-fd via the symlink-free walk. EvalSymlinks
+// canonicalizes the repo-root prefix; the O_NOFOLLOW walk in openDirFromFSRoot
+// then re-verifies every component — including golden-lock — so a symlink
+// planted at the golden-lock segment is rejected. The dir must already exist
+// (writeManifestFile creates it before calling this).
 func openManifestParentDir(root string) (*os.File, error) {
-	return openRootDir(root)
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	return openDirFromFSRoot(filepath.Join(canonicalRoot, GoldenLockDir))
 }
 
 // createTempAt creates a uniquely-named temp file inside the directory referred

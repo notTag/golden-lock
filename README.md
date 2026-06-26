@@ -27,7 +27,7 @@ golden-lock <command> [arguments]
 
 | Command | Effect | Privilege |
 |---|---|---|
-| `lock <file>...` | Hash each file, record it in `golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
+| `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
 | `unlock <file>...` | Remove file(s) from the manifest and restore writable ownership/permissions. The sanctioned change path. | **sudo** |
 | `verify` | Recompute the SHA-256 of every manifest entry and compare. Safe for CI. | none |
 
@@ -37,7 +37,7 @@ The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implemen
 
 | Command | Status | Notes |
 |---|---|---|
-| `lock <file>...` | ✅ Implemented | Hash, record, root-own `444` files + manifest. |
+| `lock [<file>...]` | ✅ Implemented | Hash, record, root-own `444` files + manifest. No-arg form locks every path listed under `golden-lock/proposal-locks/`. |
 | `unlock <file>...` | ✅ Implemented | Removes entries + restores writable perms. Covers the PRD's `remove`. |
 | `verify` | ✅ Implemented | CI gate. |
 | `add <file>` | ☐ TODO | Single-file `lock` that errors if already listed (`lock` skips). |
@@ -46,15 +46,21 @@ The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implemen
 | `rehash <file>` | ☐ TODO | Recompute stored hash after a blessed edit. |
 | `status` | ☐ TODO | Per-file hash ✅/❌ and lock state; `--json`. |
 | `list` | ☐ TODO | Print tracked paths; `--json`. |
-| `init` | ☐ TODO | Create an empty manifest at repo root. |
+| `init` | ☐ TODO | Create an empty manifest under `golden-lock/`. |
 | `install-hooks` | ☐ TODO | Append-safe `post-checkout` / `post-merge` → `apply`. |
 | `version` | ☐ TODO | Print version + build info. |
 
 ### Example
 
 ```sh
-# One-time locking ceremony (writes require root) — lock tests, configs, anything
+# One-time locking ceremony (writes require root) — name the files explicitly
 sudo golden-lock lock src/auth/tenant_isolation_test.go config/production.yaml
+
+# ...or declare the lock set in golden-lock/proposal-locks/ and lock it in one pass.
+# Each file there is a newline-separated list of repo paths, grouped by concern:
+#   golden-lock/proposal-locks/auth.txt     ->  src/auth/tenant_isolation_test.go
+#   golden-lock/proposal-locks/configs.txt  ->  config/production.yaml
+sudo golden-lock lock        # no args: locks every path listed under golden-lock/proposal-locks/
 
 # Steady state — verify is read-only, runs anywhere including CI
 golden-lock verify
@@ -91,6 +97,10 @@ CI distinguishes tampering from misconfiguration by exit code.
 
 ## The `golden.lock` manifest
 
+The manifest lives at `golden-lock/golden.lock`. The `golden-lock/` directory
+houses all of golden-lock's state — the manifest plus the `proposal-locks/` list
+files that `lock` (no args) reads.
+
 Plain text, checked into the repo, one entry per line. Hash-first to mirror `sha256sum`.
 
 ```
@@ -99,7 +109,7 @@ Plain text, checked into the repo, one entry per line. Hash-first to mirror `sha
 
 The `<sha256>` hashes the path **and** the content, not the content alone: `SHA-256( uvarint(len(path)) || path || content )`. This means the path is checked, not just recorded. A locked line can't be moved to point at a different file, and two locked files with identical content can't be swapped, without `verify` catching it.
 
-Paths are repo-root-relative and forward-slash, normalized on `lock`. The repo root is discovered via `git rev-parse --show-toplevel`, falling back to walking upward for a `.git` directory or an existing `golden.lock`, so commands work from any subdirectory. Path resolution is symlink-free from the filesystem root, so a symlinked ancestor can't redirect a locked path.
+Paths are repo-root-relative and forward-slash, normalized on `lock`. The repo root is discovered via `git rev-parse --show-toplevel`, falling back to walking upward for a `.git` directory or an existing `golden-lock/golden.lock`, so commands work from any subdirectory. Path resolution is symlink-free from the filesystem root, so a symlinked ancestor can't redirect a locked path.
 
 > Pin golden paths in `.gitattributes` (e.g. `path -text`, or repo-wide `* text=auto eol=lf`) so `autocrlf` can't rewrite bytes on checkout and produce a spurious hash mismatch.
 
@@ -130,7 +140,7 @@ The local prevention layer degrades to detection-only when the agent runs as roo
 Add to your agent context (CLAUDE.md / system prompt / task spec):
 
 ```
-Files listed in golden.lock are immutable: root-owned, chmod 444, and marked
+Files listed in golden-lock/golden.lock are immutable: root-owned, chmod 444, and marked
 immutable at the filesystem layer. They are locked on purpose — each encodes an
 invariant (a test that is the spec, a config that must not drift, a fixture that
 must stay byte-stable).
