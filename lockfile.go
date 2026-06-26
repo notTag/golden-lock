@@ -311,10 +311,10 @@ func writeManifestFile(m *Manifest, lockResult bool) error {
 
 	body := manifestBody(m)
 
-	// The manifest lives in <root>/golden-lock/. On a first-ever lock that dir
-	// does not exist yet; create it before resolving its dir-fd. A symlink planted
-	// at the golden-lock component is still caught by the O_NOFOLLOW walk below.
-	if err := os.Mkdir(filepath.Join(m.Root, GoldenLockDir), 0o755); err != nil && !os.IsExist(err) {
+	// Ensure the manifest directory exists before resolving its dir-fd. A symlink
+	// planted at the golden-lock component is still caught by the O_NOFOLLOW walk
+	// below.
+	if err := os.MkdirAll(filepath.Join(m.Root, GoldenLockDir), 0o755); err != nil {
 		return err
 	}
 
