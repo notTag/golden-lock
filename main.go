@@ -428,6 +428,8 @@ USAGE:
     %s <command> [arguments]
 
 COMMANDS:
+    setup              Scaffold %s/ for the proposal-locks workflow and
+                       write a getting-started guide. Needs no privilege.
     lock   [<file>...] Hash each file, record it in %s, then root-own + chmod 444
                        the file(s) and the manifest. Requires sudo. With no
                        files, locks every path listed under %s/.
@@ -439,7 +441,7 @@ COMMANDS:
 EXIT CODES:
     verify:  0 ok | 1 hash mismatch | 2 missing file | 3 absent/malformed manifest
     lock/unlock:  0 ok | 4 not root | 5 arg error | 6 io failure
-`, p, p, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir))
+`, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir))
 }
 
 // dispatch routes argv (excluding the program name) to the matching run* func
@@ -450,6 +452,8 @@ func dispatch(args []string) int {
 		return ExitWriteArgs
 	}
 	switch args[0] {
+	case "setup":
+		return runSetup(args[1:])
 	case "lock":
 		return runLock(args[1:])
 	case "unlock":
