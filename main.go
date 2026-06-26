@@ -97,11 +97,11 @@ func gatherProposalLocks(root string) ([]string, error) {
 				fmt.Fprintf(os.Stderr, "note: %s lists %q which is not a valid repo path; skipping: %v\n", name, line, err)
 				continue
 			}
-			if _, err := os.Stat(abs); err != nil {
-				fmt.Fprintf(os.Stderr, "note: %s lists %q but it was not found; skipping\n", name, line)
+			if seen[relPath] {
 				continue
 			}
-			if seen[relPath] {
+			if _, err := os.Stat(abs); err != nil {
+				fmt.Fprintf(os.Stderr, "note: %s lists %q but it was not found; skipping\n", name, line)
 				continue
 			}
 			seen[relPath] = true
