@@ -1,7 +1,7 @@
 name: golden-verify
 
-# Defense-in-depth tamper gate. `golden-test verify` recomputes the SHA-256 of
-# every entry in golden-test.lock and compares it to the manifest. It needs NO
+# Defense-in-depth tamper gate. `golden-lock verify` recomputes the SHA-256 of
+# every entry in golden-lock/golden.lock and compares it to the manifest. It needs NO
 # privileges (reads only), so it runs here with zero sudo. If a golden test was
 # edited without re-blessing it through the root-owned manifest, the hash drifts
 # and verify exits non-zero -> this check fails -> the change cannot merge, even
@@ -25,14 +25,14 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: build golden-test
-        run: go build -o gt .
+      - name: build golden-lock
+        run: go build -o gl .
 
-      - name: verify golden tests
+      - name: verify locked files
         run: |
-          if [ -f golden-test.lock ]; then
-            ./gt verify
+          if [ -f golden-lock/golden.lock ]; then
+            ./gl verify
           else
-            echo "no golden-test.lock present yet — nothing is locked; skipping."
-            echo "this gate activates automatically once you run 'sudo golden-test lock <file>'."
+            echo "no golden-lock/golden.lock present yet — nothing is locked; skipping."
+            echo "this gate activates automatically once you run 'sudo golden-lock lock <file>'."
           fi
