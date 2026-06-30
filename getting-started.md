@@ -1,6 +1,6 @@
-# golden-lock — getting started
+# Golden-Lock, Getting Started
 
-golden-lock freezes chosen files so they can't be silently changed: it hashes
+Golden-Lock freezes chosen files so they can't be silently changed: it hashes
 each file, records the hash in `golden-lock/golden.lock`, and makes the
 file root-owned + read-only + immutable.
 
