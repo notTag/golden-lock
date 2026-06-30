@@ -214,14 +214,21 @@ Lines whose first non-space byte is `#` are comments; blank lines ignored. No
 `sha256sum` `*` binary marker. `WriteManifest` emits header comment lines then
 entries in `Manifest.Entries` order (two spaces as the separator).
 
-**Repo-root + paths.** `FindRepoRoot` walks upward from a start dir. The
-`git rev-parse --show-toplevel` probe runs ONLY when unprivileged, and resolves
-git from a fixed vetted list (`/usr/bin/git`, …) with a pinned `PATH`, never the
-inherited PATH. Under root it is skipped entirely, relying on the nearest
-`.git`/`golden-lock/golden.lock` ancestor walk so no untrusted binary runs as
-root. `NormalizePath` resolves any input (abs or cwd-relative) to the
-repo-root-relative cleaned form and errors if it escapes the root.
-`Manifest.AbsPath` is the inverse (rel → abs under `Root`).
+**Repo-root + paths.** `FindRepoRoot` walks upward from a start dir using ONE
+marker resolution order at every privilege level, so `lock` (root) and `verify`
+(non-root) agree on the root for a normal repo (#17): (1) the nearest ancestor
+with a `.git` entry — searched across the WHOLE ancestor chain first, because it
+matches `git rev-parse --show-toplevel` for a normal repo and needs no external
+binary; (2) otherwise the nearest ancestor with `golden-lock/golden.lock`. `.git`
+strictly outranks the manifest marker, so a stray subdirectory `golden.lock` (or
+a nested `.git`) can no longer pull lock-time and verify-time roots apart. When
+unprivileged, verify additionally consults `git rev-parse --show-toplevel` first
+(git resolved from a fixed vetted list — `/usr/bin/git`, … — with a pinned
+`PATH` derived from those same vetted dirs (#21), never the inherited PATH); for
+a normal repo its answer equals the `.git` walk. Under root the probe is skipped
+entirely, so no untrusted binary runs as root (#8). `NormalizePath` resolves any
+input (abs or cwd-relative) to the repo-root-relative cleaned form and errors if
+it escapes the root. `Manifest.AbsPath` is the inverse (rel → abs under `Root`).
 
 **Manifest location.** The manifest and the `proposal-locks/` list files live
 under `<root>/golden-lock/`; `LockfilePath` returns

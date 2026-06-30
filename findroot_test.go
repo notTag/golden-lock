@@ -77,6 +77,60 @@ func TestVettedGitChildPath_NoDuplicateDirs(t *testing.T) {
 	}
 }
 
+// #17: a stray subdirectory golden.lock must NOT outrank a real `.git` higher up
+// the tree. Both `lock` (root) and `verify` (non-root) must resolve the top-level
+// `.git` dir, never the subdir that merely holds a manifest. The empty `.git`
+// marker makes `git rev-parse` fail, so the unified marker walk — the same path
+// root uses — is exercised here.
+func TestFindRepoRoot_GitOutranksStraySubdirManifest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	strayManifestDir := filepath.Join(root, "sub", GoldenLockDir)
+	if err := os.MkdirAll(strayManifestDir, 0o755); err != nil {
+		t.Fatalf("mkdir stray manifest dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(strayManifestDir, LockfileName), []byte("# stray\n"), 0o644); err != nil {
+		t.Fatalf("write stray manifest: %v", err)
+	}
+	start := filepath.Join(root, "sub")
+
+	got, err := FindRepoRoot(start)
+	if err != nil {
+		t.Fatalf("FindRepoRoot: %v", err)
+	}
+	if !sameDir(t, got, root) {
+		t.Fatalf("FindRepoRoot(%q) = %q, want top-level .git root %q (stray subdir manifest must not win)", start, got, root)
+	}
+}
+
+// #17: when a nested `.git` sits between the start dir and an outer `.git`, the
+// nearest `.git` wins — matching `git rev-parse --show-toplevel` — so root and
+// non-root agree.
+func TestFindRepoRoot_NearestGitWins(t *testing.T) {
+	outer := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outer, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir outer .git: %v", err)
+	}
+	inner := filepath.Join(outer, "nested")
+	if err := os.MkdirAll(filepath.Join(inner, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir inner .git: %v", err)
+	}
+	start := filepath.Join(inner, "deep")
+	if err := os.MkdirAll(start, 0o755); err != nil {
+		t.Fatalf("mkdir start: %v", err)
+	}
+
+	got, err := FindRepoRoot(start)
+	if err != nil {
+		t.Fatalf("FindRepoRoot: %v", err)
+	}
+	if !sameDir(t, got, inner) {
+		t.Fatalf("FindRepoRoot(%q) = %q, want nearest .git root %q", start, got, inner)
+	}
+}
+
 // sameDir compares two paths after resolving symlinks, since t.TempDir() on
 // macOS hands back a /var → /private/var symlinked path.
 func sameDir(t *testing.T, a, b string) bool {

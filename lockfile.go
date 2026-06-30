@@ -64,21 +64,37 @@ type Manifest struct {
 }
 
 // FindRepoRoot discovers the repository root starting from the given directory,
-// walking upward. Discovery prefers `git rev-parse --show-toplevel`; if git is
-// unavailable it falls back to the nearest ancestor containing a .git entry or
-// an existing golden.lock. Returns the absolute repo-root path.
+// walking upward. The marker resolution order is identical at every privilege
+// level, so `lock` (root) and `verify` (non-root) always agree on the root for a
+// normal repo — a single manifest at the git top level (#17):
+//
+//  1. The nearest ancestor containing a `.git` entry. For a normal repo this is
+//     exactly what `git rev-parse --show-toplevel` reports, and it touches no
+//     external binary, so it is safe to compute as root.
+//  2. Otherwise, the nearest ancestor containing golden-lock/golden.lock (a
+//     non-git repo, or a manifest detached from a working tree).
+//
+// `.git` is searched across the WHOLE ancestor chain before the manifest marker
+// is considered, so a stray subdirectory golden.lock (or a nested `.git`) can no
+// longer pull the lock-time and verify-time roots to different directories.
+//
+// When unprivileged, verify additionally consults `git rev-parse --show-toplevel`
+// first (git resolved from a vetted list, never the inherited PATH) to honor
+// exotic git layouts; for a normal repo its answer equals the `.git` walk above.
+// Under root that probe is skipped entirely: exec'ing a git resolved from an
+// attacker-influenced PATH would run an untrusted binary with full privilege
+// (#8). Returns the absolute repo-root path.
 func FindRepoRoot(startDir string) (string, error) {
 	abs, err := filepath.Abs(startDir)
 	if err != nil {
 		return "", err
 	}
 
-	// Prefer git's own notion of the top level — but only when we are NOT root.
-	// Under root (the sudo lock/unlock paths), exec'ing a git resolved from an
-	// attacker-influenced PATH would run an untrusted binary with full
-	// privilege (#8). In that case skip the probe entirely and rely on the
-	// .git / golden.lock ancestor walk below, which touches no external
-	// binary. When unprivileged (verify), resolve git from a sanitized,
+	// verify (non-root) prefers git's own notion of the top level; for a normal
+	// repo this equals the `.git` ancestor walk below, so the probe only matters
+	// for exotic git layouts. It is skipped under root (#8): exec'ing a git
+	// resolved from an attacker-influenced PATH would run an untrusted binary with
+	// full privilege. When unprivileged, git is resolved from a sanitized,
 	// well-known set of system locations rather than the inherited PATH.
 	if !IsRoot() {
 		if git := vettedGitPath(); git != "" {
@@ -101,23 +117,38 @@ func FindRepoRoot(startDir string) (string, error) {
 		}
 	}
 
-	// Fallback: walk upward looking for a .git entry or an existing lockfile.
-	dir := abs
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir, nil
-		}
-		if _, err := os.Stat(filepath.Join(dir, GoldenLockDir, LockfileName)); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
+	// Marker walk — identical for root and non-root. `.git` is resolved across the
+	// whole ancestor chain FIRST (it matches git's top level for a normal repo),
+	// and only if no `.git` exists anywhere above is the manifest marker used. A
+	// stray subdirectory golden.lock therefore never wins over a real working tree
+	// (#17).
+	if gitRoot := nearestAncestorWith(abs, ".git"); gitRoot != "" {
+		return gitRoot, nil
+	}
+	if manifestRoot := nearestAncestorWith(abs, filepath.Join(GoldenLockDir, LockfileName)); manifestRoot != "" {
+		return manifestRoot, nil
 	}
 
 	return "", fmt.Errorf("repo root not found from %q: no .git or %s ancestor", abs, LockfileRelPath)
+}
+
+// nearestAncestorWith returns the closest directory at or above startAbs that
+// contains relMarker, or "" if no ancestor up to the filesystem root does. It
+// only stat-checks the marker — the documented path-based root-SELECTION residual
+// (#30) — but the chosen root is still opened through the O_NOFOLLOW canonical
+// walk by the resolver before any file under it is trusted, so this can never
+// induce a symlink-follow.
+func nearestAncestorWith(startAbs, relMarker string) string {
+	for dir := startAbs; ; {
+		if _, err := os.Stat(filepath.Join(dir, relMarker)); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 // vettedGitCandidates is the fixed list of trusted absolute git locations. Both
