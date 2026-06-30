@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,37 @@ func TestFindRepoRoot_BareRootLockfileIgnored(t *testing.T) {
 	got, err := FindRepoRoot(root)
 	if err == nil && sameDir(t, got, root) {
 		t.Fatalf("anchored on bare root-level %s at %q; manifest must live under %s/", LockfileName, got, GoldenLockDir)
+	}
+}
+
+// TestVettedGitChildPath_CoversEveryCandidateDir pins #21: the pinned PATH given
+// to the git child must contain the directory of EVERY vetted git candidate, so
+// whichever git vettedGitPath could select is always reachable on that PATH. The
+// two are derived from the same list and therefore cannot drift.
+func TestVettedGitChildPath_CoversEveryCandidateDir(t *testing.T) {
+	childPath := vettedGitChildPath()
+	pathDirs := strings.Split(childPath, string(os.PathListSeparator))
+	present := make(map[string]bool, len(pathDirs))
+	for _, dir := range pathDirs {
+		present[dir] = true
+	}
+	for _, cand := range vettedGitCandidates {
+		candDir := filepath.Dir(cand)
+		if !present[candDir] {
+			t.Errorf("candidate %q dir %q missing from child PATH %q", cand, candDir, childPath)
+		}
+	}
+}
+
+// The child PATH must not contain duplicate directories.
+func TestVettedGitChildPath_NoDuplicateDirs(t *testing.T) {
+	pathDirs := strings.Split(vettedGitChildPath(), string(os.PathListSeparator))
+	seen := make(map[string]bool, len(pathDirs))
+	for _, dir := range pathDirs {
+		if seen[dir] {
+			t.Errorf("child PATH %q contains duplicate dir %q", vettedGitChildPath(), dir)
+		}
+		seen[dir] = true
 	}
 }
 

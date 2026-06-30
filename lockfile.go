@@ -84,9 +84,11 @@ func FindRepoRoot(startDir string) (string, error) {
 		if git := vettedGitPath(); git != "" {
 			cmd := exec.Command(git, "rev-parse", "--show-toplevel")
 			cmd.Dir = abs
-			// Pin a minimal PATH so any child process git might spawn also
-			// resolves from trusted locations only.
-			cmd.Env = append(os.Environ(), "PATH=/usr/bin:/bin:/usr/local/bin")
+			// Pin a minimal PATH — derived from the same vetted git dirs the
+			// binary above was selected from — so any child process git might
+			// spawn also resolves from trusted locations only, and the two lists
+			// can't drift (#21).
+			cmd.Env = append(os.Environ(), "PATH="+vettedGitChildPath())
 			if out, err := cmd.Output(); err == nil {
 				top := strings.TrimSpace(string(out))
 				if top != "" {
@@ -118,22 +120,49 @@ func FindRepoRoot(startDir string) (string, error) {
 	return "", fmt.Errorf("repo root not found from %q: no .git or %s ancestor", abs, LockfileRelPath)
 }
 
-// vettedGitPath returns an absolute path to a git binary from a fixed list of
-// trusted system locations, or "" if none is found. It deliberately does NOT
-// consult the inherited PATH, so an attacker-planted ./git or one earlier in
-// PATH cannot be selected (#8).
+// vettedGitCandidates is the fixed list of trusted absolute git locations. Both
+// the binary selection (vettedGitPath) and the pinned child PATH
+// (vettedGitChildPath) derive from this ONE list, so the git that gets selected
+// and the PATH its child processes inherit can never name different directories
+// (#21).
+var vettedGitCandidates = []string{
+	"/usr/bin/git",
+	"/bin/git",
+	"/usr/local/bin/git",
+	"/opt/homebrew/bin/git",
+}
+
+// vettedGitPath returns an absolute path to a git binary from vettedGitCandidates,
+// or "" if none is found. It deliberately does NOT consult the inherited PATH, so
+// an attacker-planted ./git or one earlier in PATH cannot be selected (#8).
 func vettedGitPath() string {
-	for _, cand := range []string{
-		"/usr/bin/git",
-		"/bin/git",
-		"/usr/local/bin/git",
-		"/opt/homebrew/bin/git",
-	} {
+	for _, cand := range vettedGitCandidates {
 		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
 			return cand
 		}
 	}
 	return ""
+}
+
+// vettedGitChildPath builds the PATH handed to the git child process from the
+// directories of vettedGitCandidates. Deriving it from the same list
+// vettedGitPath selects from means any git that could be chosen is always
+// reachable on this PATH — the two cannot drift, because they are the same list
+// (#21). A previously hard-coded PATH omitted /opt/homebrew/bin even though a
+// homebrew git was a valid candidate. Directories are emitted in candidate order
+// with duplicates removed.
+func vettedGitChildPath() string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, cand := range vettedGitCandidates {
+		dir := filepath.Dir(cand)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	return strings.Join(dirs, string(os.PathListSeparator))
 }
 
 // LockfilePath returns the absolute path to the manifest
