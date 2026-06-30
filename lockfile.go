@@ -257,6 +257,15 @@ func ReadManifest(root string) (*Manifest, error) {
 			return nil, fmt.Errorf("%s:%d: malformed line: %q: %w", path, lineNo, raw, ErrManifestMalformed)
 		}
 
+		// Reject a parseable-but-malformed hash token (truncated, over-long, or
+		// upper-cased hex) HERE rather than letting it flow through to a content
+		// comparison. A corrupt hash that never matches any recomputed digest
+		// would otherwise surface as a content MISMATCH (verify exit 1,
+		// "tampering") when its real cause is a corrupt manifest (exit 3) (#18).
+		if !isValidManifestHash(hash) {
+			return nil, fmt.Errorf("%s:%d: malformed hash %q: %w", path, lineNo, hash, ErrManifestMalformed)
+		}
+
 		m.Entries = append(m.Entries, Entry{Hash: hash, Path: rest})
 	}
 	if err := scanner.Err(); err != nil {
@@ -264,6 +273,28 @@ func ReadManifest(root string) (*Manifest, error) {
 	}
 
 	return m, nil
+}
+
+// isValidManifestHash reports whether token is a well-formed manifest hash:
+// exactly 64 lowercase hex characters, the textual form of a SHA-256 digest as
+// emitted by manifestBody. The strictness is intentional — a SHA-256 verify
+// only ever compares against this canonical form, so an upper-cased or
+// wrong-length token can never legitimately match and is treated as manifest
+// corruption (see ReadManifest, #18).
+func isValidManifestHash(token string) bool {
+	const sha256HexLen = 64
+	if len(token) != sha256HexLen {
+		return false
+	}
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		isDigit := c >= '0' && c <= '9'
+		isLowerHex := c >= 'a' && c <= 'f'
+		if !isDigit && !isLowerHex {
+			return false
+		}
+	}
+	return true
 }
 
 // manifestBody serializes the manifest header + entries to a string.
