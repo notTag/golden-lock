@@ -125,6 +125,14 @@ Guaranteed under that assumption, on a filesystem that supports the immutable fl
 
 The local prevention layer degrades to detection-only when the agent runs as root (common in containers), when the filesystem can't store the immutable flag (e.g. overlayfs — `lock` reports this per file), or when a machine never ran `sudo golden-lock lock` (fresh clone returns dev-owned files). In all cases CI `verify` plus branch protection remains the authoritative gate. For defense in depth, put `golden.lock` under CODEOWNERS with required review.
 
+## What survives a clone
+
+The local prevention layer does **not** travel with the repo. Be precise about which guarantee is portable and which is not.
+
+- **`chown root:0` + `chmod 444` + the immutable flag are local filesystem state, not repo content.** Git records neither ownership nor permission bits — the executable bit is the only mode it tracks, and it stores no immutable flag at all. After any `git clone`, the golden files and `golden-lock/golden.lock` land as ordinary user-owned, writable files. Nothing the kernel was enforcing on the original host carries over. The lock has to be re-asserted per machine with `sudo golden-lock lock`.
+- **The durable, portable protection is the CI hash gate (`golden-lock verify`).** It is just content comparison, so it works identically on every checkout regardless of who owns the files. But note the consequence of `golden-lock/golden.lock` being committed alongside the files it guards: a single commit that edits a golden file **and** rewrites that file's recorded hash in the manifest passes `verify` green. The gate proves only that file content matches the manifest content in the *same* commit — not that either is the blessed version.
+- **So treat CI as a tripwire, not as cryptographic immutability.** Its real value is that tampering forces a visible diff in `golden-lock/golden.lock` into the pull request. That only protects you if branch protection is enabled (so the change can't be pushed straight to `main`) **and** a human actually reviews `.lock` diffs (so a manifest edit smuggled alongside a golden-file change gets caught). Without both, the tripwire is silent. Do not assume the immutability you set up locally rides along with the repository.
+
 ## CI integration
 
 `verify` is read-only and privilege-free.
