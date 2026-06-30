@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -270,10 +271,39 @@ func runLock(args []string) int {
 // it unlocks every path listed under golden-lock/proposal-locks/ — the symmetric
 // inverse of `lock` with no args. Returns a write exit code.
 func runUnlock(args []string) int {
+	fs := flag.NewFlagSet("unlock", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	uidFlag := fs.Int("uid", 0, "uid to restore unlocked file ownership to (required from a bare root shell)")
+	gidFlag := fs.Int("gid", 0, "gid to restore ownership to (defaults to the uid's primary group)")
+	if err := fs.Parse(args); err != nil {
+		return ExitWriteArgs
+	}
+	uidProvided, gidProvided := false, false
+	fs.Visit(func(fl *flag.Flag) {
+		switch fl.Name {
+		case "uid":
+			uidProvided = true
+		case "gid":
+			gidProvided = true
+		}
+	})
+	fileArgs := fs.Args()
+
 	if !IsRoot() {
 		fmt.Fprintf(os.Stderr, "%s unlock: must run as root (use sudo)\n", progName())
 		return ExitWriteNotRoot
 	}
+
+	// A bare root shell (sudo -i / root login) has no SUDO_UID, so without an
+	// explicit --uid the chown below would hand the file to 0:0 and leave it
+	// uneditable by an ordinary user. Refuse, and tell the operator how to find
+	// the uid (#19).
+	sudoUIDSet := os.Getenv("SUDO_UID") != ""
+	if rootShellNeedsExplicitUID(os.Geteuid(), sudoUIDSet, uidProvided) {
+		fmt.Fprintf(os.Stderr, "%s unlock: running as root with no SUDO_UID; pass --uid=<n> so the unlocked file is owned by a real user (find it with: id -u <username>)\n", progName())
+		return ExitWriteArgs
+	}
+	restoreUID, restoreGID := restoreIdentity(uidProvided, *uidFlag, gidProvided, *gidFlag)
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -290,13 +320,13 @@ func runUnlock(args []string) int {
 	// the symmetric inverse of `lock` with no args (#34). The same gatherer is
 	// reused, so missing listed files are reported and skipped, not fatal.
 	proposalLocksRel := filepath.Join(GoldenLockDir, ProposalLocksDir)
-	if len(args) == 0 {
-		args, err = gatherProposalLocks(root)
+	if len(fileArgs) == 0 {
+		fileArgs, err = gatherProposalLocks(root)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s unlock: cannot read %s/: %v\n", progName(), proposalLocksRel, err)
 			return ExitWriteIO
 		}
-		if len(args) == 0 {
+		if len(fileArgs) == 0 {
 			fmt.Fprintf(os.Stderr, "%s unlock: no files given and %s/ lists none\n", progName(), proposalLocksRel)
 			return ExitWriteArgs
 		}
@@ -317,8 +347,8 @@ func runUnlock(args []string) int {
 	// Resolve all paths AND verify membership BEFORE mutating anything (#6).
 	// An untracked arg is an arg error (5); we must not chown/chmod any file
 	// (nor leave earlier args already unlocked) when a later arg is rejected.
-	relPaths := make([]string, 0, len(args))
-	for _, f := range args {
+	relPaths := make([]string, 0, len(fileArgs))
+	for _, f := range fileArgs {
 		relPath, err := NormalizePath(root, f)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s unlock: bad path %q: %v\n", progName(), f, err)
@@ -344,7 +374,7 @@ func runUnlock(args []string) int {
 			fmt.Fprintf(os.Stderr, "%s unlock: cannot open %q: %v\n", progName(), relPath, err)
 			return ExitWriteIO
 		}
-		if err := UnlockFileFD(fh); err != nil {
+		if err := UnlockFileFDAs(fh, restoreUID, restoreGID); err != nil {
 			fh.Close()
 			fmt.Fprintf(os.Stderr, "%s unlock: cannot restore %q: %v\n", progName(), relPath, err)
 			return ExitWriteIO
