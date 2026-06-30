@@ -355,17 +355,22 @@ func runUnlock(args []string) int {
 
 	// If unlocking emptied the manifest, remove the manifest file entirely so a
 	// later `verify` returns exit 3 (absent) rather than a misleading exit 0 on
-	// a vacuously-OK empty manifest (#9). The live manifest is 444; removing it
-	// only needs write permission on the (operator-owned) repo-root directory.
+	// a vacuously-OK empty manifest (#9). The removal goes through the same
+	// dir-fd discipline as every other privileged mutation — no path-based op (#20).
 	if len(m.Entries) == 0 {
-		// The live manifest is root:0444 and (where supported) immutable; clear
-		// the flag first or the unlink below is refused. Open via the
-		// symlink-free resolver so a swapped manifest symlink can't redirect us.
-		if mf, err := resolveNoSymlink(root, LockfileRelPath, m.Path, os.O_RDONLY); err == nil {
-			_ = clearImmutable(mf)
-			mf.Close()
+		// Resolve the manifest's parent dir to a verified dir-fd via the
+		// symlink-free walk (the same anchor WriteManifestLocked's Renameat uses),
+		// so a swapped parent symlink cannot redirect the unlink. The live manifest
+		// is root:0444 and (where supported) immutable; clear its flag first via
+		// that dir-fd or the Unlinkat below is refused.
+		dirFD, err := openManifestParentDir(root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s unlock: cannot open manifest dir: %v\n", progName(), err)
+			return ExitWriteIO
 		}
-		if err := os.Remove(m.Path); err != nil && !os.IsNotExist(err) {
+		defer dirFD.Close()
+		clearLiveManifestImmutable(dirFD)
+		if err := unlinkAt(dirFD, LockfileName); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "%s unlock: cannot remove emptied manifest: %v\n", progName(), err)
 			return ExitWriteIO
 		}
