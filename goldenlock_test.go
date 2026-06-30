@@ -496,10 +496,18 @@ func TestDispatch_LockNoArgs(t *testing.T) {
 	}
 }
 
+// #34: `unlock` with no args is the symmetric inverse of `lock` with no args —
+// it sources files from golden-lock/proposal-locks/ rather than erroring. The
+// privilege gate still runs first, so a non-root invocation returns not-root.
+// The "nothing listed" arg-error path is only reachable as root; the gathering
+// logic itself is covered in proposal_locks_test.go.
 func TestDispatch_UnlockNoArgs(t *testing.T) {
+	if IsRoot() {
+		t.Skip("running as root: the no-args path proceeds to proposal-locks gathering")
+	}
 	code := dispatch([]string{"unlock"})
-	if code != ExitWriteArgs {
-		t.Errorf("unlock with no args: code = %d, want %d", code, ExitWriteArgs)
+	if code != ExitWriteNotRoot {
+		t.Errorf("unlock with no args (non-root): code = %d, want %d", code, ExitWriteNotRoot)
 	}
 }
 

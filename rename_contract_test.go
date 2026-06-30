@@ -177,6 +177,35 @@ func TestContract_LockVerifyAnyFile(t *testing.T) {
 	}
 }
 
+// TestUnlockNoArgs_UnlocksProposalLocks pins #34: `unlock` with no args is the
+// symmetric inverse of `lock` with no args — it unlocks every path listed under
+// golden-lock/proposal-locks/. Needs real root (chown) and t.Skips otherwise.
+func TestUnlockNoArgs_UnlocksProposalLocks(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("not root: lock/unlock chown requires real root privilege")
+	}
+	root := fakeRepo(t)
+	writeFile(t, root, "coreA.go", "package a\n")
+	writeFile(t, root, "coreB.go", "package b\n")
+	writeFile(t, root, "golden-lock/proposal-locks/core.txt", "coreA.go\ncoreB.go\n")
+	chdirTo(t, root)
+
+	if code := runLock(nil); code != ExitWriteOK {
+		t.Fatalf("runLock no-args: code = %d, want %d", code, ExitWriteOK)
+	}
+	// Restore writability before TempDir cleanup even if an assertion below fails.
+	t.Cleanup(func() { _ = runUnlock(nil) })
+
+	if code := runUnlock(nil); code != ExitWriteOK {
+		t.Fatalf("runUnlock no-args: code = %d, want %d", code, ExitWriteOK)
+	}
+	// Unlocking the whole set empties the manifest, which unlock then removes, so
+	// verify reports the manifest absent.
+	if _, code := Verify(root); code != ExitVerifyLockfile {
+		t.Errorf("post bulk-unlock verify = %d, want %d (manifest removed)", code, ExitVerifyLockfile)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // stderr-capture helpers (usage/dispatch write to os.Stderr directly)
 // ---------------------------------------------------------------------------

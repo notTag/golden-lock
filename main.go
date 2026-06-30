@@ -265,13 +265,11 @@ func runLock(args []string) int {
 	return ExitWriteOK
 }
 
-// runUnlock implements `unlock <file>...`: unlock + restore the files, remove
-// their entries, then persist (and re-lock) the manifest. Returns a write exit code.
+// runUnlock implements `unlock [<file>...]`: unlock + restore the files, remove
+// their entries, then persist (and re-lock) the manifest. With no file arguments
+// it unlocks every path listed under golden-lock/proposal-locks/ — the symmetric
+// inverse of `lock` with no args. Returns a write exit code.
 func runUnlock(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "%s unlock: no files given\n", progName())
-		return ExitWriteArgs
-	}
 	if !IsRoot() {
 		fmt.Fprintf(os.Stderr, "%s unlock: must run as root (use sudo)\n", progName())
 		return ExitWriteNotRoot
@@ -286,6 +284,22 @@ func runUnlock(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s unlock: cannot find repo root: %v\n", progName(), err)
 		return ExitWriteArgs
+	}
+
+	// No explicit files → unlock everything listed under golden-lock/proposal-locks/,
+	// the symmetric inverse of `lock` with no args (#34). The same gatherer is
+	// reused, so missing listed files are reported and skipped, not fatal.
+	proposalLocksRel := filepath.Join(GoldenLockDir, ProposalLocksDir)
+	if len(args) == 0 {
+		args, err = gatherProposalLocks(root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s unlock: cannot read %s/: %v\n", progName(), proposalLocksRel, err)
+			return ExitWriteIO
+		}
+		if len(args) == 0 {
+			fmt.Fprintf(os.Stderr, "%s unlock: no files given and %s/ lists none\n", progName(), proposalLocksRel)
+			return ExitWriteArgs
+		}
 	}
 
 	m, err := ReadManifest(root)
@@ -433,15 +447,16 @@ COMMANDS:
     lock   [<file>...] Hash each file, record it in %s, then root-own + chmod 444
                        the file(s) and the manifest. Requires sudo. With no
                        files, locks every path listed under %s/.
-    unlock <file>...   Remove file(s) from the manifest and restore writable
-                       ownership/permissions. Requires sudo.
+    unlock [<file>...] Remove file(s) from the manifest and restore writable
+                       ownership/permissions. Requires sudo. With no files,
+                       unlocks every path listed under %s/.
     verify             Recompute the SHA-256 of every manifest entry and compare.
                        Needs no privilege (safe for CI).
 
 EXIT CODES:
     verify:  0 ok | 1 hash mismatch | 2 missing file | 3 absent/malformed manifest
     lock/unlock:  0 ok | 4 not root | 5 arg error | 6 io failure
-`, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir))
+`, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir), filepath.Join(GoldenLockDir, ProposalLocksDir))
 }
 
 // dispatch routes argv (excluding the program name) to the matching run* func
