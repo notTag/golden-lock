@@ -437,6 +437,8 @@ COMMANDS:
                        ownership/permissions. Requires sudo.
     verify             Recompute the SHA-256 of every manifest entry and compare.
                        Needs no privilege (safe for CI).
+    version            Print the version plus build info (revision, Go version).
+                       Also available as --version / -v. Needs no privilege.
 
 EXIT CODES:
     verify:  0 ok | 1 hash mismatch | 2 missing file | 3 absent/malformed manifest
@@ -460,6 +462,8 @@ func dispatch(args []string) int {
 		return runUnlock(args[1:])
 	case "verify":
 		return runVerify(args[1:])
+	case "version", "--version", "-v":
+		return runVersion(args[1:])
 	case "--help", "-h", "help":
 		usage()
 		return ExitWriteOK

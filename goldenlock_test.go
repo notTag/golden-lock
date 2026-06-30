@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -519,6 +520,48 @@ func TestDispatch_Help(t *testing.T) {
 	if code := dispatch([]string{"--help"}); code != ExitWriteOK {
 		t.Errorf("--help: code = %d, want %d", code, ExitWriteOK)
 	}
+}
+
+// TestDispatch_Version pins that both the `version` subcommand and the
+// --version / -v flags exit 0 and emit a non-empty version line on stdout.
+func TestDispatch_Version(t *testing.T) {
+	for _, arg := range []string{"version", "--version", "-v"} {
+		stdout, code := captureStdout(t, func() int {
+			return dispatch([]string{arg})
+		})
+		if code != ExitWriteOK {
+			t.Errorf("%s: code = %d, want %d", arg, code, ExitWriteOK)
+		}
+		if !strings.Contains(stdout, version) {
+			t.Errorf("%s: stdout = %q, want it to contain version %q", arg, stdout, version)
+		}
+	}
+}
+
+// captureStdout redirects os.Stdout for the duration of fn and returns whatever
+// fn wrote along with fn's return value.
+func captureStdout(t *testing.T, fn func() int) (string, int) {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+
+	originalStdout := os.Stdout
+	os.Stdout = writer
+	code := fn()
+	os.Stdout = originalStdout
+
+	if closeErr := writer.Close(); closeErr != nil {
+		t.Fatalf("close pipe writer: %v", closeErr)
+	}
+
+	captured, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	return string(captured), code
 }
 
 // ---------------------------------------------------------------------------
