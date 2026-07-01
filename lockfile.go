@@ -64,29 +64,47 @@ type Manifest struct {
 }
 
 // FindRepoRoot discovers the repository root starting from the given directory,
-// walking upward. Discovery prefers `git rev-parse --show-toplevel`; if git is
-// unavailable it falls back to the nearest ancestor containing a .git entry or
-// an existing golden.lock. Returns the absolute repo-root path.
+// walking upward. The marker resolution order is identical at every privilege
+// level, so `lock` (root) and `verify` (non-root) always agree on the root for a
+// normal repo — a single manifest at the git top level (#17):
+//
+//  1. The nearest ancestor containing a `.git` entry. For a normal repo this is
+//     exactly what `git rev-parse --show-toplevel` reports, and it touches no
+//     external binary, so it is safe to compute as root.
+//  2. Otherwise, the nearest ancestor containing golden-lock/golden.lock (a
+//     non-git repo, or a manifest detached from a working tree).
+//
+// `.git` is searched across the WHOLE ancestor chain before the manifest marker
+// is considered, so a stray subdirectory golden.lock (or a nested `.git`) can no
+// longer pull the lock-time and verify-time roots to different directories.
+//
+// When unprivileged, verify additionally consults `git rev-parse --show-toplevel`
+// first (git resolved from a vetted list, never the inherited PATH) to honor
+// exotic git layouts; for a normal repo its answer equals the `.git` walk above.
+// Under root that probe is skipped entirely: exec'ing a git resolved from an
+// attacker-influenced PATH would run an untrusted binary with full privilege
+// (#8). Returns the absolute repo-root path.
 func FindRepoRoot(startDir string) (string, error) {
 	abs, err := filepath.Abs(startDir)
 	if err != nil {
 		return "", err
 	}
 
-	// Prefer git's own notion of the top level — but only when we are NOT root.
-	// Under root (the sudo lock/unlock paths), exec'ing a git resolved from an
-	// attacker-influenced PATH would run an untrusted binary with full
-	// privilege (#8). In that case skip the probe entirely and rely on the
-	// .git / golden.lock ancestor walk below, which touches no external
-	// binary. When unprivileged (verify), resolve git from a sanitized,
+	// verify (non-root) prefers git's own notion of the top level; for a normal
+	// repo this equals the `.git` ancestor walk below, so the probe only matters
+	// for exotic git layouts. It is skipped under root (#8): exec'ing a git
+	// resolved from an attacker-influenced PATH would run an untrusted binary with
+	// full privilege. When unprivileged, git is resolved from a sanitized,
 	// well-known set of system locations rather than the inherited PATH.
 	if !IsRoot() {
 		if git := vettedGitPath(); git != "" {
 			cmd := exec.Command(git, "rev-parse", "--show-toplevel")
 			cmd.Dir = abs
-			// Pin a minimal PATH so any child process git might spawn also
-			// resolves from trusted locations only.
-			cmd.Env = append(os.Environ(), "PATH=/usr/bin:/bin:/usr/local/bin")
+			// Pin a minimal PATH — derived from the same vetted git dirs the
+			// binary above was selected from — so any child process git might
+			// spawn also resolves from trusted locations only, and the two lists
+			// can't drift (#21).
+			cmd.Env = append(os.Environ(), "PATH="+vettedGitChildPath())
 			if out, err := cmd.Output(); err == nil {
 				top := strings.TrimSpace(string(out))
 				if top != "" {
@@ -99,41 +117,83 @@ func FindRepoRoot(startDir string) (string, error) {
 		}
 	}
 
-	// Fallback: walk upward looking for a .git entry or an existing lockfile.
-	dir := abs
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir, nil
-		}
-		if _, err := os.Stat(filepath.Join(dir, GoldenLockDir, LockfileName)); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
+	// Marker walk — identical for root and non-root. `.git` is resolved across the
+	// whole ancestor chain FIRST (it matches git's top level for a normal repo),
+	// and only if no `.git` exists anywhere above is the manifest marker used. A
+	// stray subdirectory golden.lock therefore never wins over a real working tree
+	// (#17).
+	if gitRoot := nearestAncestorWith(abs, ".git"); gitRoot != "" {
+		return gitRoot, nil
+	}
+	if manifestRoot := nearestAncestorWith(abs, filepath.Join(GoldenLockDir, LockfileName)); manifestRoot != "" {
+		return manifestRoot, nil
 	}
 
 	return "", fmt.Errorf("repo root not found from %q: no .git or %s ancestor", abs, LockfileRelPath)
 }
 
-// vettedGitPath returns an absolute path to a git binary from a fixed list of
-// trusted system locations, or "" if none is found. It deliberately does NOT
-// consult the inherited PATH, so an attacker-planted ./git or one earlier in
-// PATH cannot be selected (#8).
+// nearestAncestorWith returns the closest directory at or above startAbs that
+// contains relMarker, or "" if no ancestor up to the filesystem root does. It
+// only stat-checks the marker — the documented path-based root-SELECTION residual
+// (#30) — but the chosen root is still opened through the O_NOFOLLOW canonical
+// walk by the resolver before any file under it is trusted, so this can never
+// induce a symlink-follow.
+func nearestAncestorWith(startAbs, relMarker string) string {
+	for dir := startAbs; ; {
+		if _, err := os.Stat(filepath.Join(dir, relMarker)); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// vettedGitCandidates is the fixed list of trusted absolute git locations. Both
+// the binary selection (vettedGitPath) and the pinned child PATH
+// (vettedGitChildPath) derive from this ONE list, so the git that gets selected
+// and the PATH its child processes inherit can never name different directories
+// (#21).
+var vettedGitCandidates = []string{
+	"/usr/bin/git",
+	"/bin/git",
+	"/usr/local/bin/git",
+	"/opt/homebrew/bin/git",
+}
+
+// vettedGitPath returns an absolute path to a git binary from vettedGitCandidates,
+// or "" if none is found. It deliberately does NOT consult the inherited PATH, so
+// an attacker-planted ./git or one earlier in PATH cannot be selected (#8).
 func vettedGitPath() string {
-	for _, cand := range []string{
-		"/usr/bin/git",
-		"/bin/git",
-		"/usr/local/bin/git",
-		"/opt/homebrew/bin/git",
-	} {
+	for _, cand := range vettedGitCandidates {
 		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
 			return cand
 		}
 	}
 	return ""
+}
+
+// vettedGitChildPath builds the PATH handed to the git child process from the
+// directories of vettedGitCandidates. Deriving it from the same list
+// vettedGitPath selects from means any git that could be chosen is always
+// reachable on this PATH — the two cannot drift, because they are the same list
+// (#21). A previously hard-coded PATH omitted /opt/homebrew/bin even though a
+// homebrew git was a valid candidate. Directories are emitted in candidate order
+// with duplicates removed.
+func vettedGitChildPath() string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, cand := range vettedGitCandidates {
+		dir := filepath.Dir(cand)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	return strings.Join(dirs, string(os.PathListSeparator))
 }
 
 // LockfilePath returns the absolute path to the manifest
@@ -257,6 +317,15 @@ func ReadManifest(root string) (*Manifest, error) {
 			return nil, fmt.Errorf("%s:%d: malformed line: %q: %w", path, lineNo, raw, ErrManifestMalformed)
 		}
 
+		// Reject a parseable-but-malformed hash token (truncated, over-long, or
+		// upper-cased hex) HERE rather than letting it flow through to a content
+		// comparison. A corrupt hash that never matches any recomputed digest
+		// would otherwise surface as a content MISMATCH (verify exit 1,
+		// "tampering") when its real cause is a corrupt manifest (exit 3) (#18).
+		if !isValidManifestHash(hash) {
+			return nil, fmt.Errorf("%s:%d: malformed hash %q: %w", path, lineNo, hash, ErrManifestMalformed)
+		}
+
 		m.Entries = append(m.Entries, Entry{Hash: hash, Path: rest})
 	}
 	if err := scanner.Err(); err != nil {
@@ -264,6 +333,28 @@ func ReadManifest(root string) (*Manifest, error) {
 	}
 
 	return m, nil
+}
+
+// isValidManifestHash reports whether token is a well-formed manifest hash:
+// exactly 64 lowercase hex characters, the textual form of a SHA-256 digest as
+// emitted by manifestBody. The strictness is intentional — a SHA-256 verify
+// only ever compares against this canonical form, so an upper-cased or
+// wrong-length token can never legitimately match and is treated as manifest
+// corruption (see ReadManifest, #18).
+func isValidManifestHash(token string) bool {
+	const sha256HexLen = 64
+	if len(token) != sha256HexLen {
+		return false
+	}
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		isDigit := c >= '0' && c <= '9'
+		isLowerHex := c >= 'a' && c <= 'f'
+		if !isDigit && !isLowerHex {
+			return false
+		}
+	}
+	return true
 }
 
 // manifestBody serializes the manifest header + entries to a string.

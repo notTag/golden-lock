@@ -203,6 +203,45 @@ func TestReadManifest_MalformedReturnsError(t *testing.T) {
 	}
 }
 
+// TestReadManifest_MalformedHashReportedAsCorruption pins #18: a line that
+// parses into (hash, path) but whose hash token is not exactly 64 lowercase hex
+// chars is manifest CORRUPTION (ErrManifestMalformed → verify exit 3), not a
+// content mismatch (exit 1). Without parse-time validation a truncated or
+// upper-cased hash would slip through and later masquerade as tampering.
+func TestReadManifest_MalformedHashReportedAsCorruption(t *testing.T) {
+	valid := sha256hex("ok")
+	cases := map[string]string{
+		"truncated":   valid[:63],
+		"over-long":   valid + "a",
+		"upper-cased": strings.ToUpper(valid),
+		"non-hex":     strings.Repeat("g", 64),
+	}
+	for name, badHash := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := fakeRepo(t)
+			writeManifest(t, root, badHash+"  some/file.txt\n")
+			_, err := ReadManifest(root)
+			if err == nil || !errors.Is(err, ErrManifestMalformed) {
+				t.Fatalf("hash %q: want ErrManifestMalformed, got %v", badHash, err)
+			}
+		})
+	}
+}
+
+// A canonical 64-lowercase-hex hash must still parse cleanly after #18.
+func TestReadManifest_ValidHashAccepted(t *testing.T) {
+	root := fakeRepo(t)
+	h := sha256hex("good")
+	writeManifest(t, root, h+"  some/file.txt\n")
+	m, err := ReadManifest(root)
+	if err != nil {
+		t.Fatalf("ReadManifest of valid hash: %v", err)
+	}
+	if len(m.Entries) != 1 || m.Entries[0].Hash != h {
+		t.Fatalf("entries = %+v, want one entry with hash %s", m.Entries, h)
+	}
+}
+
 // TestReadManifest_AbsentVsMalformedSentinels pins finding #3's contract: an
 // absent manifest yields an os.IsNotExist error, while a present-but-corrupt
 // one yields ErrManifestMalformed. The write path keys on this distinction to
