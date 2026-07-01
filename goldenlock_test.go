@@ -525,7 +525,7 @@ func TestDispatch_Help(t *testing.T) {
 // TestDispatch_Version pins that both the `version` subcommand and the
 // --version / -v flags exit 0 and emit a non-empty version line on stdout.
 func TestDispatch_Version(t *testing.T) {
-	for _, arg := range []string{"version", "--version", "-v"} {
+	for _, arg := range []string{"--version", "-v", "version"} {
 		stdout, code := captureStdout(t, func() int {
 			return dispatch([]string{arg})
 		})

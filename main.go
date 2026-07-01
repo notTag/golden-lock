@@ -462,7 +462,7 @@ func dispatch(args []string) int {
 		return runUnlock(args[1:])
 	case "verify":
 		return runVerify(args[1:])
-	case "version", "--version", "-v":
+	case "--version", "-v", "version":
 		return runVersion(args[1:])
 	case "--help", "-h", "help":
 		usage()
