@@ -575,10 +575,18 @@ func TestDispatch_LockNoArgs(t *testing.T) {
 	}
 }
 
+// #34: `unlock` with no args is the symmetric inverse of `lock` with no args —
+// it sources files from golden-lock/proposal-locks/ rather than erroring. The
+// privilege gate still runs first, so a non-root invocation returns not-root.
+// The "nothing listed" arg-error path is only reachable as root; the gathering
+// logic itself is covered in proposal_locks_test.go.
 func TestDispatch_UnlockNoArgs(t *testing.T) {
+	if IsRoot() {
+		t.Skip("running as root: the no-args path proceeds to proposal-locks gathering")
+	}
 	code := dispatch([]string{"unlock"})
-	if code != ExitWriteArgs {
-		t.Errorf("unlock with no args: code = %d, want %d", code, ExitWriteArgs)
+	if code != ExitWriteNotRoot {
+		t.Errorf("unlock with no args (non-root): code = %d, want %d", code, ExitWriteNotRoot)
 	}
 }
 
@@ -1051,5 +1059,98 @@ func TestOpenRootDir_AcceptsSymlinkedAncestor(t *testing.T) {
 	}
 	if want := goldenHash("g_test.go", body); got != want {
 		t.Errorf("hash = %s, want %s", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #19 — explicit --uid required from a real root shell
+// ---------------------------------------------------------------------------
+
+// TestRootShellNeedsExplicitUID pins the #19 decision table: refuse only when
+// running as real root (euid 0) with neither SUDO_UID nor an explicit --uid.
+func TestRootShellNeedsExplicitUID(t *testing.T) {
+	cases := []struct {
+		name        string
+		euid        int
+		sudoUIDSet  bool
+		uidProvided bool
+		want        bool
+	}{
+		{"sudo unlock (SUDO_UID present)", 0, true, false, false},
+		{"bare root shell, no --uid", 0, false, false, true},
+		{"bare root shell, --uid given", 0, false, true, false},
+		{"non-root", 1000, false, false, false},
+		{"sudo unlock with --uid", 0, true, true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := rootShellNeedsExplicitUID(c.euid, c.sudoUIDSet, c.uidProvided); got != c.want {
+				t.Errorf("rootShellNeedsExplicitUID(%d,%v,%v) = %v, want %v",
+					c.euid, c.sudoUIDSet, c.uidProvided, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRestoreIdentity covers the three resolution branches: defer to SudoUID,
+// explicit --uid+--gid verbatim, and --uid with a derived primary group.
+func TestRestoreIdentity(t *testing.T) {
+	t.Setenv("SUDO_UID", "1234")
+	t.Setenv("SUDO_GID", "5678")
+
+	if uid, gid := restoreIdentity(false, 0, false, 0); uid != 1234 || gid != 5678 {
+		t.Errorf("no --uid: got %d:%d, want 1234:5678", uid, gid)
+	}
+	if uid, gid := restoreIdentity(true, 4242, true, 99); uid != 4242 || gid != 99 {
+		t.Errorf("--uid+--gid: got %d:%d, want 4242:99", uid, gid)
+	}
+	wantUID := os.Getuid()
+	uid, gid := restoreIdentity(true, wantUID, false, 0)
+	if uid != wantUID {
+		t.Errorf("--uid only: uid = %d, want %d", uid, wantUID)
+	}
+	if want := primaryGroupOf(wantUID); gid != want {
+		t.Errorf("--uid only: gid = %d, want %d", gid, want)
+	}
+}
+
+// TestPrimaryGroupOf_UnknownUIDFallsBackToUID pins that an unknown uid yields the
+// uid itself rather than an error or 0.
+func TestPrimaryGroupOf_UnknownUIDFallsBackToUID(t *testing.T) {
+	const unknownUID = 4000000000 // no such user on any sane system
+	if gid := primaryGroupOf(unknownUID); gid != unknownUID {
+		t.Errorf("primaryGroupOf(unknown) = %d, want %d (fallback to uid)", gid, unknownUID)
+	}
+}
+
+// TestDispatch_UnlockBadUIDFlag pins that an unparseable --uid is an arg error,
+// reachable without privilege (flag parsing runs before the root gate).
+func TestDispatch_UnlockBadUIDFlag(t *testing.T) {
+	code := withSilencedStderr(t, func() int {
+		return dispatch([]string{"unlock", "--uid=notanumber", "x.go"})
+	})
+	if code != ExitWriteArgs {
+		t.Errorf("unlock bad --uid: code = %d, want %d", code, ExitWriteArgs)
+	}
+}
+
+// TestUnlockRootShellRequiresUID pins the #19 guard end-to-end: as a real root
+// shell (euid 0, SUDO_UID cleared) unlock must refuse without --uid. Self-skips
+// when not root.
+func TestUnlockRootShellRequiresUID(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("not root: the real-root-shell guard only triggers at euid 0")
+	}
+	t.Setenv("SUDO_UID", "")
+	t.Setenv("SUDO_GID", "")
+	root := fakeRepo(t)
+	writeFile(t, root, "x.go", "package x\n")
+	chdirTo(t, root)
+
+	code := withSilencedStderr(t, func() int {
+		return dispatch([]string{"unlock", "x.go"})
+	})
+	if code != ExitWriteArgs {
+		t.Errorf("bare-root-shell unlock without --uid: code = %d, want %d", code, ExitWriteArgs)
 	}
 }

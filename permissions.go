@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -52,6 +53,49 @@ func SudoUID() (uid int, gid int) {
 		}
 	}
 	return uid, gid
+}
+
+// rootShellNeedsExplicitUID reports whether unlock must refuse to run for lack of
+// a real user to restore ownership to (#19). Under `sudo golden-lock unlock`,
+// SUDO_UID names the invoking user; in a bare root shell (sudo -i, root login) it
+// is unset, so SudoUID would fall back to 0:0 and leave the unlocked file
+// root-owned and uneditable by an ordinary user. In that case an explicit --uid
+// is required; an explicit --uid (uidProvided) always satisfies the requirement.
+func rootShellNeedsExplicitUID(euid int, sudoUIDSet, uidProvided bool) bool {
+	if uidProvided {
+		return false
+	}
+	return euid == 0 && !sudoUIDSet
+}
+
+// restoreIdentity resolves the uid:gid that unlock hands files back to. An
+// explicit --uid (uidProvided) wins, taking the gid from --gid when given
+// (gidProvided), else the uid's primary group, else the uid itself. With no
+// --uid it defers to SudoUID. Callers must run rootShellNeedsExplicitUID before
+// relying on the no-flag branch under a bare root shell.
+func restoreIdentity(uidProvided bool, uid int, gidProvided bool, gid int) (int, int) {
+	if !uidProvided {
+		return SudoUID()
+	}
+	if gidProvided {
+		return uid, gid
+	}
+	return uid, primaryGroupOf(uid)
+}
+
+// primaryGroupOf returns the primary group id of uid via os/user, falling back to
+// the uid itself when the user is unknown or its gid is unparseable (on a
+// private-group system uid==gid, so the fallback is usually correct anyway).
+func primaryGroupOf(uid int) int {
+	u, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		return uid
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return uid
+	}
+	return gid
 }
 
 // openWritableResolved opens the file at repo-root-relative relPath for a
@@ -106,17 +150,25 @@ func LockFileFD(f *os.File) error {
 	return nil
 }
 
-// UnlockFileFD restores an already-open file to writable via its fd: clear the
-// immutable flag (else the chown/chmod below are refused), then fchown to the
-// sudo user and fchmod 0644. Requires root.
+// UnlockFileFD restores an already-open file to writable via its fd, handing
+// ownership back to the invoking sudo user (see SudoUID). This is the SUDO_UID
+// default; callers that resolved an explicit restore identity (e.g. unlock's
+// --uid) call UnlockFileFDAs directly.
 func UnlockFileFD(f *os.File) error {
+	uid, gid := SudoUID()
+	return UnlockFileFDAs(f, uid, gid)
+}
+
+// UnlockFileFDAs restores an already-open file to writable via its fd: clear the
+// immutable flag (else the chown/chmod below are refused), then fchown to the
+// given uid:gid and fchmod 0644. Requires root.
+func UnlockFileFDAs(f *os.File, uid, gid int) error {
 	if !IsRoot() {
 		return fmt.Errorf("unlock %s: must be root", f.Name())
 	}
 	if err := clearImmutable(f); err != nil {
 		return fmt.Errorf("unlock %s: clear immutable flag: %w", f.Name(), err)
 	}
-	uid, gid := SudoUID()
 	if err := f.Chown(uid, gid); err != nil {
 		return fmt.Errorf("unlock %s: chown %d:%d: %w", f.Name(), uid, gid, err)
 	}
