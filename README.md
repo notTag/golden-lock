@@ -48,7 +48,7 @@ The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implemen
 | `list` | ☐ TODO | Print tracked paths; `--json`. |
 | `init` | ☐ TODO | Create an empty manifest under `golden-lock/`. |
 | `install-hooks` | ☐ TODO | Append-safe `post-checkout` / `post-merge` → `apply`. |
-| `version` | ☐ TODO | Print version + build info. |
+| `version` | ✅ Implemented | Print version + build info; also `--version` / `-v`. |
 
 ### Example
 
