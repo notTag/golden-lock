@@ -40,13 +40,18 @@ type VerifyResult struct {
 
 // Verify reads the manifest at root, recomputes the SHA-256 of every entry,
 // and returns the per-entry results together with the aggregate exit code per
-// the precedence rules above. When the lockfile is absent or malformed it
-// returns nil results and ExitVerifyLockfile.
-func Verify(root string) (results []VerifyResult, exitCode int) {
+// the precedence rules above. When the lockfile cannot be loaded it returns nil
+// results and ExitVerifyLockfile.
+//
+// The ReadManifest error is surfaced as manifestErr (nil on success) so the
+// caller can refine the operator-facing diagnostic without changing the exit
+// code: a genuinely absent or malformed manifest reads differently from one
+// that is present but unreadable (e.g. EACCES), even though both are exit 3 (#29).
+func Verify(root string) (results []VerifyResult, exitCode int, manifestErr error) {
 	m, err := ReadManifest(root)
 	if err != nil {
-		// Absent or malformed lockfile dominates: nil results, exit 3.
-		return nil, ExitVerifyLockfile
+		// Absent, malformed, or unreadable lockfile dominates: nil results, exit 3.
+		return nil, ExitVerifyLockfile, err
 	}
 
 	exitCode = ExitVerifyOK
@@ -76,5 +81,5 @@ func Verify(root string) (results []VerifyResult, exitCode int) {
 		}
 		results = append(results, res)
 	}
-	return results, exitCode
+	return results, exitCode, nil
 }

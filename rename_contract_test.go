@@ -140,7 +140,7 @@ func TestContract_VerifyIsFileAgnostic(t *testing.T) {
 	writeFile(t, root, relPath, content)
 	writeManifest(t, root, goldenHash(relPath, content)+"  "+relPath+"\n")
 
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code != ExitVerifyOK {
 		t.Fatalf("Verify of a non-test file: code = %d, want %d (locking must be file-agnostic)", code, ExitVerifyOK)
 	}
@@ -168,7 +168,7 @@ func TestContract_LockVerifyAnyFile(t *testing.T) {
 	// lock makes the file + manifest immutable; clear that before TempDir cleanup.
 	t.Cleanup(func() { _ = runUnlock([]string{relPath}) })
 
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code != ExitVerifyOK {
 		t.Fatalf("Verify after locking a non-test file: code = %d, want %d", code, ExitVerifyOK)
 	}

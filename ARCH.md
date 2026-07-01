@@ -177,7 +177,7 @@ type VerifyResult struct {
 	Actual   string // "" when missing
 }
 
-func Verify(root string) (results []VerifyResult, exitCode int)
+func Verify(root string) (results []VerifyResult, exitCode int, manifestErr error)
 ```
 
 ### main.go — arg routing, dispatch, exit codes, --help

@@ -390,9 +390,19 @@ func runVerify(args []string) int {
 		return ExitVerifyLockfile
 	}
 
-	results, code := Verify(root)
+	results, code, manifestErr := Verify(root)
 	if code == ExitVerifyLockfile {
-		fmt.Fprintf(os.Stderr, "%s verify: %s absent or malformed\n", progName(), LockfileName)
+		// Same exit code (3), but distinguish a missing/corrupt trust anchor from
+		// one that is present-but-unreadable. An os.IsNotExist or malformed error
+		// means the anchor is gone or garbage; any other error (e.g. EACCES, I/O)
+		// means the anchor exists and the operator just can't read it — a
+		// different remediation (fix permissions, not re-lock) (#29).
+		absentOrMalformed := os.IsNotExist(manifestErr) || errors.Is(manifestErr, ErrManifestMalformed)
+		if manifestErr != nil && !absentOrMalformed {
+			fmt.Fprintf(os.Stderr, "%s verify: %s present but unreadable: %v\n", progName(), LockfileName, manifestErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s verify: %s absent or malformed\n", progName(), LockfileName)
+		}
 		return code
 	}
 

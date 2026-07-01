@@ -311,7 +311,7 @@ func TestVerify_OK(t *testing.T) {
 	writeFile(t, root, "golden/expected.json", `{"answer":42}`)
 	lockManifestFor(t, root, "golden/expected.json")
 
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code != ExitVerifyOK {
 		t.Fatalf("Verify code = %d, want %d (OK)", code, ExitVerifyOK)
 	}
@@ -329,7 +329,7 @@ func TestVerify_Mismatch(t *testing.T) {
 	// Mutate the locked file's content after recording its hash.
 	writeFile(t, root, rel, `{"answer":99}`)
 
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code != ExitVerifyMismatch {
 		t.Fatalf("Verify code = %d, want %d (mismatch)", code, ExitVerifyMismatch)
 	}
@@ -352,7 +352,7 @@ func TestVerify_Missing(t *testing.T) {
 		t.Fatalf("remove: %v", err)
 	}
 
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code != ExitVerifyMissing {
 		t.Fatalf("Verify code = %d, want %d (missing)", code, ExitVerifyMissing)
 	}
@@ -363,7 +363,7 @@ func TestVerify_Missing(t *testing.T) {
 
 func TestVerify_AbsentLockfile(t *testing.T) {
 	root := fakeRepo(t) // no manifest written
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code != ExitVerifyLockfile {
 		t.Fatalf("Verify code = %d, want %d (absent lockfile)", code, ExitVerifyLockfile)
 	}
@@ -375,9 +375,48 @@ func TestVerify_AbsentLockfile(t *testing.T) {
 func TestVerify_MalformedLockfile(t *testing.T) {
 	root := fakeRepo(t)
 	writeManifest(t, root, "garbage-with-no-separator\n")
-	_, code := Verify(root)
+	_, code, _ := Verify(root)
 	if code != ExitVerifyLockfile {
 		t.Fatalf("Verify code = %d, want %d (malformed lockfile)", code, ExitVerifyLockfile)
+	}
+}
+
+// TestVerify_UnreadableLockfile covers #29: a manifest that is present and
+// intact but unreadable (mode 000 / EACCES) must still map to exit 3, yet
+// surface a permission error distinct from os.IsNotExist and ErrManifestMalformed
+// so the caller can tell "I can't read the trust anchor" from "it's gone". Run as
+// non-root only — root bypasses the permission bits, so we skip rather than give a
+// false pass.
+func TestVerify_UnreadableLockfile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are bypassed, EACCES is unobservable")
+	}
+	root := fakeRepo(t)
+	writeFile(t, root, "golden/expected.json", `{"answer":42}`)
+	lockManifestFor(t, root, "golden/expected.json")
+
+	manifestPath := LockfilePath(root)
+	if err := os.Chmod(manifestPath, 0o000); err != nil {
+		t.Fatalf("chmod manifest 000: %v", err)
+	}
+	// Restore a readable mode so t.TempDir cleanup can remove the file.
+	t.Cleanup(func() { _ = os.Chmod(manifestPath, 0o644) })
+
+	results, code, manifestErr := Verify(root)
+	if code != ExitVerifyLockfile {
+		t.Fatalf("Verify code = %d, want %d (unreadable lockfile still exit 3)", code, ExitVerifyLockfile)
+	}
+	if results != nil {
+		t.Errorf("results = %+v, want nil", results)
+	}
+	if manifestErr == nil {
+		t.Fatal("manifestErr = nil, want a permission error")
+	}
+	if os.IsNotExist(manifestErr) {
+		t.Errorf("manifestErr satisfies os.IsNotExist; an unreadable manifest is not absent: %v", manifestErr)
+	}
+	if errors.Is(manifestErr, ErrManifestMalformed) {
+		t.Errorf("manifestErr is ErrManifestMalformed; an unreadable manifest is not malformed: %v", manifestErr)
 	}
 }
 
@@ -394,7 +433,7 @@ func TestVerify_MissingOutranksMismatch(t *testing.T) {
 		t.Fatalf("remove b: %v", err)
 	}
 
-	_, code := Verify(root)
+	_, code, _ := Verify(root)
 	if code != ExitVerifyMissing {
 		t.Fatalf("aggregate code = %d, want %d (missing outranks mismatch)", code, ExitVerifyMissing)
 	}
@@ -412,7 +451,7 @@ func TestLockThenVerify_OK(t *testing.T) {
 	writeFile(t, root, "tests/golden_output.txt", "line1\nline2\n")
 	lockManifestFor(t, root, "tests/golden_output.txt")
 
-	_, code := Verify(root)
+	_, code, _ := Verify(root)
 	if code != ExitVerifyOK {
 		t.Fatalf("lock-then-verify code = %d, want %d", code, ExitVerifyOK)
 	}
@@ -427,7 +466,7 @@ func TestUnlockRoundTrip_RemovesEntry(t *testing.T) {
 	lockManifestFor(t, root, rel)
 
 	// Sanity: locked + verifies OK.
-	if _, code := Verify(root); code != ExitVerifyOK {
+	if _, code, _ := Verify(root); code != ExitVerifyOK {
 		t.Fatalf("pre-unlock verify = %d, want 0", code)
 	}
 
@@ -453,7 +492,7 @@ func TestUnlockRoundTrip_RemovesEntry(t *testing.T) {
 		t.Fatalf("post-unlock entries = %d, want 0", len(back.Entries))
 	}
 	writeFile(t, root, rel, "freely edited after unlock")
-	if _, code := Verify(root); code != ExitVerifyOK {
+	if _, code, _ := Verify(root); code != ExitVerifyOK {
 		t.Errorf("post-unlock verify = %d, want 0 (untracked file is free to edit)", code)
 	}
 }
@@ -606,7 +645,7 @@ func TestVerify_SymlinkLeafNotOK(t *testing.T) {
 		t.Skipf("symlink unsupported here: %v", err)
 	}
 
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code == ExitVerifyOK {
 		t.Fatalf("verify of symlinked-to-decoy entry returned OK; want non-OK")
 	}
@@ -669,7 +708,7 @@ func TestVerify_ManifestSymlinkRejected(t *testing.T) {
 	}
 
 	// And Verify must surface exit 3 (absent/malformed), never 0 against forged hashes.
-	results, code := Verify(root)
+	results, code, _ := Verify(root)
 	if code != ExitVerifyLockfile {
 		t.Fatalf("Verify with symlinked manifest: code = %d, want %d (lockfile)", code, ExitVerifyLockfile)
 	}
