@@ -201,7 +201,7 @@ func TestUnlockNoArgs_UnlocksProposalLocks(t *testing.T) {
 	}
 	// Unlocking the whole set empties the manifest, which unlock then removes, so
 	// verify reports the manifest absent.
-	if _, code := Verify(root); code != ExitVerifyLockfile {
+	if _, code, _ := Verify(root); code != ExitVerifyLockfile {
 		t.Errorf("post bulk-unlock verify = %d, want %d (manifest removed)", code, ExitVerifyLockfile)
 	}
 }
