@@ -133,13 +133,20 @@ func expandLockTargets(root string, inputs []string) ([]string, error) {
 
 	var files []string
 	seen := make(map[string]bool)
+	// De-duplicate on the cleaned ABSOLUTE path so the same file reached via a
+	// relative directory and an absolute argument (e.g. `lock core /repo/core/a.go`)
+	// collapses to one target — otherwise the second pass reopens an already-frozen
+	// file and can leave it frozen but unpublished (Codex review P1).
 	add := func(path string) {
-		clean := filepath.Clean(path)
-		if seen[clean] {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = filepath.Clean(path)
+		}
+		if seen[abs] {
 			return
 		}
-		seen[clean] = true
-		files = append(files, clean)
+		seen[abs] = true
+		files = append(files, abs)
 	}
 
 	for _, input := range inputs {
@@ -159,6 +166,11 @@ func expandLockTargets(root string, inputs []string) ([]string, error) {
 		// classification comes from a real stat rather than readdir type bits —
 		// which some filesystems report as unknown, making WalkDir mis-recurse or
 		// mistake a subdirectory for a regular file (Codex review P2).
+		//
+		// Compare the dot-entry check against the CLEANED walk root so an explicitly
+		// named dot-directory with a trailing separator (`lock .github/`) is not
+		// mistaken for a nested dot-entry and skipped (Codex review P2).
+		walkRoot := filepath.Clean(input)
 		walkErr := filepath.Walk(input, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
@@ -173,7 +185,7 @@ func expandLockTargets(root string, inputs []string) ([]string, error) {
 			// Skip dot-entries anywhere below the input root (the root itself was
 			// explicitly named, so it is never skipped). A dot-directory is pruned
 			// whole; a dotfile is just ignored.
-			isDotEntry := strings.HasPrefix(info.Name(), ".") && path != input
+			isDotEntry := strings.HasPrefix(info.Name(), ".") && filepath.Clean(path) != walkRoot
 			if isDotEntry {
 				if info.IsDir() {
 					return filepath.SkipDir

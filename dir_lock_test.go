@@ -118,6 +118,44 @@ func TestExpandLockTargetsDedupes(t *testing.T) {
 	}
 }
 
+// The same file reached via a relative directory and an absolute argument must
+// collapse to one target, or the second pass reopens an already-frozen file and
+// can leave it frozen but unpublished (Codex review P1).
+func TestExpandLockTargetsDedupesRelAndAbs(t *testing.T) {
+	root := fakeRepo(t)
+	abs := writeFile(t, root, "core/a.go", "package a")
+
+	t.Chdir(root) // so "core" resolves relative to the repo root
+	got, err := expandLockTargets(root, []string{"core", abs})
+	if err != nil {
+		t.Fatalf("expandLockTargets: %v", err)
+	}
+
+	want := []string{"core/a.go"}
+	if gotRel := relForRoot(t, root, got); !equalStrings(gotRel, want) {
+		t.Fatalf("expanded %v, want %v", gotRel, want)
+	}
+}
+
+// An explicitly named dot-directory with a trailing separator (`lock .github/`)
+// must behave like `lock .github` — the root is not mistaken for a nested
+// dot-entry and skipped (Codex review P2).
+func TestExpandLockTargetsDotDirTrailingSlash(t *testing.T) {
+	root := fakeRepo(t)
+	writeFile(t, root, ".github/workflows/ci.yml", "on: push")
+
+	t.Chdir(root)
+	got, err := expandLockTargets(root, []string{".github/"})
+	if err != nil {
+		t.Fatalf("expandLockTargets: %v", err)
+	}
+
+	want := []string{".github/workflows/ci.yml"}
+	if gotRel := relForRoot(t, root, got); !equalStrings(gotRel, want) {
+		t.Fatalf("expanded %v, want %v", gotRel, want)
+	}
+}
+
 // A directory unlock argument expands to exactly the manifest entries beneath
 // it — untracked files on disk and entries outside the directory are ignored
 // (feat-006).
