@@ -574,6 +574,20 @@ func (m *Manifest) Find(relPath string) int {
 	return -1
 }
 
+// entriesUnder returns the paths of every manifest entry that lives beneath the
+// given repo-relative directory path (any entry prefixed by "<dirRel>/"). Paths
+// are forward-slash, matching Entry.Path, so callers pass a NormalizePath result.
+func (m *Manifest) entriesUnder(dirRel string) []string {
+	prefix := dirRel + "/"
+	var out []string
+	for i := range m.Entries {
+		if strings.HasPrefix(m.Entries[i].Path, prefix) {
+			out = append(out, m.Entries[i].Path)
+		}
+	}
+	return out
+}
+
 // Upsert inserts or updates the entry for relPath with the given hash. It
 // returns true if an existing entry was updated, false if a new entry was
 // appended.

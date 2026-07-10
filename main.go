@@ -112,6 +112,186 @@ func gatherProposalLocks(root string) ([]string, error) {
 	return paths, nil
 }
 
+// expandLockTargets flattens each input path into the concrete set of regular
+// files to lock. A directory input is walked recursively and every regular file
+// under it is collected; a plain file input is kept as-is. Dotfiles and
+// dot-directories (.git, .DS_Store, …) are skipped, matching the proposal-locks
+// listing rules (gatherProposalLocks). Symlinks — whether an input itself or an
+// entry found during the walk — are skipped rather than locked; the per-file
+// freeze flow additionally refuses any symlinked path component, so this is
+// defence in depth (feat-006). Golden Lock's own state directory (golden-lock/,
+// holding the manifest and proposal-locks) is pruned so `lock .` never freezes
+// and hashes the manifest as user content — which would leave the rewritten
+// live manifest inconsistent with its own recorded hash and fail verify. Results
+// are absolute, cleaned, and de-duplicated so a file reached both explicitly and
+// via a directory is only locked once.
+func expandLockTargets(root string, inputs []string) ([]string, error) {
+	stateDirAbs, err := filepath.Abs(filepath.Join(root, GoldenLockDir))
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	seen := make(map[string]bool)
+	// De-duplicate on the cleaned ABSOLUTE path so the same file reached via a
+	// relative directory and an absolute argument (e.g. `lock core /repo/core/a.go`)
+	// collapses to one target — otherwise the second pass reopens an already-frozen
+	// file and can leave it frozen but unpublished (Codex review P1).
+	add := func(path string) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = filepath.Clean(path)
+		}
+		if seen[abs] {
+			return
+		}
+		seen[abs] = true
+		files = append(files, abs)
+	}
+
+	for _, input := range inputs {
+		info, err := os.Lstat(input)
+		if err != nil {
+			return nil, fmt.Errorf("cannot stat %q: %w", input, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(os.Stderr, "note: skipping %q: path is a symlink\n", input)
+			continue
+		}
+		if !info.IsDir() {
+			add(input)
+			continue
+		}
+		// filepath.Walk lstats every entry, so directory / symlink / regular-file
+		// classification comes from a real stat rather than readdir type bits —
+		// which some filesystems report as unknown, making WalkDir mis-recurse or
+		// mistake a subdirectory for a regular file (Codex review P2).
+		//
+		// Compare the dot-entry check against the CLEANED walk root so an explicitly
+		// named dot-directory with a trailing separator (`lock .github/`) is not
+		// mistaken for a nested dot-entry and skipped (Codex review P2).
+		walkRoot := filepath.Clean(input)
+		walkErr := filepath.Walk(input, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			// Prune Golden Lock's own state dir (golden-lock/) so a root-level
+			// `lock .` never treats the manifest / proposal-locks as user content.
+			if info.IsDir() {
+				if abs, absErr := filepath.Abs(path); absErr == nil && abs == stateDirAbs {
+					return filepath.SkipDir
+				}
+			}
+			// Skip dot-entries anywhere below the input root (the root itself was
+			// explicitly named, so it is never skipped). A dot-directory is pruned
+			// whole; a dotfile is just ignored.
+			isDotEntry := strings.HasPrefix(info.Name(), ".") && filepath.Clean(path) != walkRoot
+			if isDotEntry {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if info.IsDir() {
+				return nil
+			}
+			// Only regular files are lockable; symlinks and specials (fifos,
+			// devices, sockets) are silently passed over.
+			if info.Mode()&os.ModeSymlink != 0 {
+				fmt.Fprintf(os.Stderr, "note: skipping %q: symlink\n", path)
+				return nil
+			}
+			if info.Mode().IsRegular() {
+				add(path)
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return nil, fmt.Errorf("walking %q: %w", input, walkErr)
+		}
+	}
+	return files, nil
+}
+
+// expandUnlockTargets resolves each unlock argument to the manifest-relative
+// paths it refers to. A directory argument expands to exactly the manifest
+// entries beneath it — untracked files on disk are ignored, preserving unlock's
+// rule that it never touches a file it did not lock — and a directory with no
+// locked files under it is reported and skipped. The repo root itself (e.g.
+// `unlock .`) expands to every entry, the symmetric inverse of a repo-wide
+// `lock .`. A file argument keeps the strict rule that an explicitly-named path
+// must itself be locked, else it is an argument error. Results are de-duplicated
+// so a path named both directly and via a parent directory is unlocked once
+// (feat-006).
+func expandUnlockTargets(m *Manifest, root string, inputs []string) ([]string, error) {
+	var relPaths []string
+	seen := make(map[string]bool)
+	add := func(relPath string) {
+		if seen[relPath] {
+			return
+		}
+		seen[relPath] = true
+		relPaths = append(relPaths, relPath)
+	}
+
+	for _, input := range inputs {
+		// Detect a directory via lstat so a symlinked "directory" is not followed.
+		info, statErr := os.Lstat(input)
+		isDir := statErr == nil && info.IsDir()
+
+		// The repo root has no NormalizePath form (it is rejected as "resolves to
+		// the repo root itself"), so handle it before normalizing: a directory
+		// argument pointing at the root unlocks every entry.
+		if isDir && isRepoRoot(root, input) {
+			if len(m.Entries) == 0 {
+				fmt.Fprintln(os.Stderr, "note: no locked files to unlock; skipping")
+				continue
+			}
+			for i := range m.Entries {
+				add(m.Entries[i].Path)
+			}
+			continue
+		}
+
+		relPath, err := NormalizePath(root, input)
+		if err != nil {
+			return nil, fmt.Errorf("bad path %q: %w", input, err)
+		}
+		if isDir {
+			under := m.entriesUnder(relPath)
+			if len(under) == 0 {
+				fmt.Fprintf(os.Stderr, "note: %s has no locked files under it; skipping\n", relPath)
+				continue
+			}
+			for _, entryPath := range under {
+				add(entryPath)
+			}
+			continue
+		}
+		// A plain file argument must itself be locked (unchanged strict rule).
+		if m.Find(relPath) < 0 {
+			return nil, fmt.Errorf("%q is not listed in %s", relPath, LockfileName)
+		}
+		add(relPath)
+	}
+	return relPaths, nil
+}
+
+// isRepoRoot reports whether input resolves to the same absolute path as root.
+// Used to treat a directory argument that points at the repo root (e.g. `.`) as
+// "every manifest entry", since NormalizePath deliberately rejects the root.
+func isRepoRoot(root, input string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	inputAbs, err := filepath.Abs(input)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(rootAbs) == filepath.Clean(inputAbs)
+}
+
 // runLock implements `lock [<file>...]`: discover repo root, hash each file,
 // upsert manifest entries, persist the manifest, then lock the files + the
 // manifest. With no file arguments, the lock set is gathered from
@@ -147,6 +327,18 @@ func runLock(args []string) int {
 			fmt.Fprintf(os.Stderr, "%s lock: no files given and %s/ lists none\n", progName(), proposalLocksRel)
 			return ExitWriteArgs
 		}
+	}
+
+	// Expand any directory arguments into their contained regular files so the
+	// freeze-then-hash flow below runs per file, one manifest entry each (feat-006).
+	args, err = expandLockTargets(root, args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s lock: %v\n", progName(), err)
+		return ExitWriteIO
+	}
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "%s lock: nothing to lock — the given path(s) held no regular files (empty directory, or only dotfiles/symlinks)\n", progName())
+		return ExitWriteArgs
 	}
 
 	// Distinguish a genuinely absent manifest (start fresh) from a present but
@@ -346,19 +538,16 @@ func runUnlock(args []string) int {
 
 	// Resolve all paths AND verify membership BEFORE mutating anything (#6).
 	// An untracked arg is an arg error (5); we must not chown/chmod any file
-	// (nor leave earlier args already unlocked) when a later arg is rejected.
-	relPaths := make([]string, 0, len(fileArgs))
-	for _, f := range fileArgs {
-		relPath, err := NormalizePath(root, f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s unlock: bad path %q: %v\n", progName(), f, err)
-			return ExitWriteArgs
-		}
-		if m.Find(relPath) < 0 {
-			fmt.Fprintf(os.Stderr, "%s unlock: %q is not listed in %s\n", progName(), relPath, LockfileName)
-			return ExitWriteArgs
-		}
-		relPaths = append(relPaths, relPath)
+	// (nor leave earlier args already unlocked) when a later arg is rejected. A
+	// directory arg expands to the manifest entries beneath it (feat-006).
+	relPaths, err := expandUnlockTargets(m, root, fileArgs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s unlock: %v\n", progName(), err)
+		return ExitWriteArgs
+	}
+	if len(relPaths) == 0 {
+		fmt.Fprintf(os.Stderr, "%s unlock: nothing to unlock — the given path(s) held no locked files\n", progName())
+		return ExitWriteArgs
 	}
 
 	for _, relPath := range relPaths {
@@ -489,11 +678,13 @@ USAGE:
 COMMANDS:
     setup              Scaffold %s/ for the proposal-locks workflow and
                        write a getting-started guide. Needs no privilege.
-    lock   [<file>...] Hash each file, record it in %s, then root-own + chmod 444
-                       the file(s) and the manifest. Requires sudo. With no
-                       files, locks every path listed under %s/.
-    unlock [<file>...] Remove file(s) from the manifest and restore writable
-                       ownership/permissions. Requires sudo. With no files,
+    lock   [<path>...] Hash each file, record it in %s, then root-own + chmod 444
+                       the file(s) and the manifest. Requires sudo. A directory
+                       path locks every regular file under it, recursively. With
+                       no paths, locks every path listed under %s/.
+    unlock [<path>...] Remove file(s) from the manifest and restore writable
+                       ownership/permissions. Requires sudo. A directory path
+                       unlocks the locked files beneath it. With no paths,
                        unlocks every path listed under %s/.
     verify             Recompute the SHA-256 of every manifest entry and compare.
                        Needs no privilege (safe for CI).
