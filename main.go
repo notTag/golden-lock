@@ -112,6 +112,75 @@ func gatherProposalLocks(root string) ([]string, error) {
 	return paths, nil
 }
 
+// expandLockTargets flattens each input path into the concrete set of regular
+// files to lock. A directory input is walked recursively and every regular file
+// under it is collected; a plain file input is kept as-is. Dotfiles and
+// dot-directories (.git, .DS_Store, …) are skipped, matching the proposal-locks
+// listing rules (gatherProposalLocks). Symlinks — whether an input itself or an
+// entry found during the walk — are skipped rather than locked; the per-file
+// freeze flow additionally refuses any symlinked path component, so this is
+// defence in depth (feat-006). Results are absolute, cleaned, and de-duplicated
+// so a file reached both explicitly and via a directory is only locked once.
+func expandLockTargets(inputs []string) ([]string, error) {
+	var files []string
+	seen := make(map[string]bool)
+	add := func(path string) {
+		clean := filepath.Clean(path)
+		if seen[clean] {
+			return
+		}
+		seen[clean] = true
+		files = append(files, clean)
+	}
+
+	for _, input := range inputs {
+		info, err := os.Lstat(input)
+		if err != nil {
+			return nil, fmt.Errorf("cannot stat %q: %w", input, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(os.Stderr, "note: skipping %q: path is a symlink\n", input)
+			continue
+		}
+		if !info.IsDir() {
+			add(input)
+			continue
+		}
+		walkErr := filepath.WalkDir(input, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			// Skip dot-entries anywhere below the input root (the root itself was
+			// explicitly named, so it is never skipped). A dot-directory is pruned
+			// whole; a dotfile is just ignored.
+			isDotEntry := strings.HasPrefix(entry.Name(), ".") && path != input
+			if isDotEntry {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			// Only regular files are lockable; symlinks and specials (fifos,
+			// devices, sockets) are silently passed over.
+			if entry.Type()&os.ModeSymlink != 0 {
+				fmt.Fprintf(os.Stderr, "note: skipping %q: symlink\n", path)
+				return nil
+			}
+			if entry.Type().IsRegular() {
+				add(path)
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return nil, fmt.Errorf("walking %q: %w", input, walkErr)
+		}
+	}
+	return files, nil
+}
+
 // runLock implements `lock [<file>...]`: discover repo root, hash each file,
 // upsert manifest entries, persist the manifest, then lock the files + the
 // manifest. With no file arguments, the lock set is gathered from
@@ -147,6 +216,18 @@ func runLock(args []string) int {
 			fmt.Fprintf(os.Stderr, "%s lock: no files given and %s/ lists none\n", progName(), proposalLocksRel)
 			return ExitWriteArgs
 		}
+	}
+
+	// Expand any directory arguments into their contained regular files so the
+	// freeze-then-hash flow below runs per file, one manifest entry each (feat-006).
+	args, err = expandLockTargets(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s lock: %v\n", progName(), err)
+		return ExitWriteIO
+	}
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "%s lock: nothing to lock — the given path(s) held no regular files (empty directory, or only dotfiles/symlinks)\n", progName())
+		return ExitWriteArgs
 	}
 
 	// Distinguish a genuinely absent manifest (start fresh) from a present but
@@ -489,9 +570,10 @@ USAGE:
 COMMANDS:
     setup              Scaffold %s/ for the proposal-locks workflow and
                        write a getting-started guide. Needs no privilege.
-    lock   [<file>...] Hash each file, record it in %s, then root-own + chmod 444
-                       the file(s) and the manifest. Requires sudo. With no
-                       files, locks every path listed under %s/.
+    lock   [<path>...] Hash each file, record it in %s, then root-own + chmod 444
+                       the file(s) and the manifest. Requires sudo. A directory
+                       path locks every regular file under it, recursively. With
+                       no paths, locks every path listed under %s/.
     unlock [<file>...] Remove file(s) from the manifest and restore writable
                        ownership/permissions. Requires sudo. With no files,
                        unlocks every path listed under %s/.
