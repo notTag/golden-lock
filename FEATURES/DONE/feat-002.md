@@ -1,7 +1,8 @@
 # [002] Skill: scan project for core functionality and propose lock candidates
 
-- Status: in-progress
+- Status: Done
 - Created: 2026-06-20
+- Done: 2026-07-10
 - Priority: med
 - Bump: minor
 
@@ -39,4 +40,6 @@ critical test is left unlocked.
 - `golden-scan` is non-destructive by construction — no write/move/chmod/chown/sudo. It
   ranks candidates by risk, tags each Covered / Uncovered / Is-test, recommends `*.golden.*`
   extraction, then stops and hands off to `/golden-test`.
-- Awaiting user verification before `Status: Done`.
+- Verified against `.claude/skills/golden-scan/SKILL.md`: the shipped skill is
+  read-only, scans source and tests, ranks core candidates, reports coverage
+  gaps and extraction recommendations, and stops at a proposal.
