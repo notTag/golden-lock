@@ -146,30 +146,34 @@ func expandLockTargets(inputs []string) ([]string, error) {
 			add(input)
 			continue
 		}
-		walkErr := filepath.WalkDir(input, func(path string, entry os.DirEntry, err error) error {
+		// filepath.Walk lstats every entry, so directory / symlink / regular-file
+		// classification comes from a real stat rather than readdir type bits —
+		// which some filesystems report as unknown, making WalkDir mis-recurse or
+		// mistake a subdirectory for a regular file (Codex review P2).
+		walkErr := filepath.Walk(input, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
 			// Skip dot-entries anywhere below the input root (the root itself was
 			// explicitly named, so it is never skipped). A dot-directory is pruned
 			// whole; a dotfile is just ignored.
-			isDotEntry := strings.HasPrefix(entry.Name(), ".") && path != input
+			isDotEntry := strings.HasPrefix(info.Name(), ".") && path != input
 			if isDotEntry {
-				if entry.IsDir() {
+				if info.IsDir() {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if entry.IsDir() {
+			if info.IsDir() {
 				return nil
 			}
 			// Only regular files are lockable; symlinks and specials (fifos,
 			// devices, sockets) are silently passed over.
-			if entry.Type()&os.ModeSymlink != 0 {
+			if info.Mode()&os.ModeSymlink != 0 {
 				fmt.Fprintf(os.Stderr, "note: skipping %q: symlink\n", path)
 				return nil
 			}
-			if entry.Type().IsRegular() {
+			if info.Mode().IsRegular() {
 				add(path)
 			}
 			return nil
@@ -185,10 +189,12 @@ func expandLockTargets(inputs []string) ([]string, error) {
 // paths it refers to. A directory argument expands to exactly the manifest
 // entries beneath it — untracked files on disk are ignored, preserving unlock's
 // rule that it never touches a file it did not lock — and a directory with no
-// locked files under it is reported and skipped. A file argument keeps the
-// strict rule that an explicitly-named path must itself be locked, else it is an
-// argument error. Results are de-duplicated so a path named both directly and
-// via a parent directory is unlocked once (feat-006).
+// locked files under it is reported and skipped. The repo root itself (e.g.
+// `unlock .`) expands to every entry, the symmetric inverse of a repo-wide
+// `lock .`. A file argument keeps the strict rule that an explicitly-named path
+// must itself be locked, else it is an argument error. Results are de-duplicated
+// so a path named both directly and via a parent directory is unlocked once
+// (feat-006).
 func expandUnlockTargets(m *Manifest, root string, inputs []string) ([]string, error) {
 	var relPaths []string
 	seen := make(map[string]bool)
@@ -201,13 +207,29 @@ func expandUnlockTargets(m *Manifest, root string, inputs []string) ([]string, e
 	}
 
 	for _, input := range inputs {
+		// Detect a directory via lstat so a symlinked "directory" is not followed.
+		info, statErr := os.Lstat(input)
+		isDir := statErr == nil && info.IsDir()
+
+		// The repo root has no NormalizePath form (it is rejected as "resolves to
+		// the repo root itself"), so handle it before normalizing: a directory
+		// argument pointing at the root unlocks every entry.
+		if isDir && isRepoRoot(root, input) {
+			if len(m.Entries) == 0 {
+				fmt.Fprintln(os.Stderr, "note: no locked files to unlock; skipping")
+				continue
+			}
+			for i := range m.Entries {
+				add(m.Entries[i].Path)
+			}
+			continue
+		}
+
 		relPath, err := NormalizePath(root, input)
 		if err != nil {
 			return nil, fmt.Errorf("bad path %q: %w", input, err)
 		}
-		// Detect a directory via lstat so a symlinked "directory" is not followed.
-		info, statErr := os.Lstat(input)
-		if statErr == nil && info.IsDir() {
+		if isDir {
 			under := m.entriesUnder(relPath)
 			if len(under) == 0 {
 				fmt.Fprintf(os.Stderr, "note: %s has no locked files under it; skipping\n", relPath)
@@ -225,6 +247,21 @@ func expandUnlockTargets(m *Manifest, root string, inputs []string) ([]string, e
 		add(relPath)
 	}
 	return relPaths, nil
+}
+
+// isRepoRoot reports whether input resolves to the same absolute path as root.
+// Used to treat a directory argument that points at the repo root (e.g. `.`) as
+// "every manifest entry", since NormalizePath deliberately rejects the root.
+func isRepoRoot(root, input string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	inputAbs, err := filepath.Abs(input)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(rootAbs) == filepath.Clean(inputAbs)
 }
 
 // runLock implements `lock [<file>...]`: discover repo root, hash each file,

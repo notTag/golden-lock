@@ -149,6 +149,27 @@ func TestExpandUnlockTargetsUntrackedFileErrors(t *testing.T) {
 	}
 }
 
+// A directory argument that points at the repo root (e.g. `unlock .`) expands
+// to every manifest entry — the symmetric inverse of a repo-wide `lock .` —
+// even though NormalizePath rejects the root itself (Codex review P2).
+func TestExpandUnlockTargetsRepoRootExpandsAll(t *testing.T) {
+	root := fakeRepo(t)
+	m := &Manifest{Root: root}
+	m.Upsert("core/a.go", "h1")
+	m.Upsert("other/c.go", "h2")
+
+	t.Chdir(root) // so "." lstats as the repo root
+	got, err := expandUnlockTargets(m, root, []string{"."})
+	if err != nil {
+		t.Fatalf("expandUnlockTargets: %v", err)
+	}
+	sort.Strings(got)
+	want := []string{"core/a.go", "other/c.go"}
+	if !equalStrings(got, want) {
+		t.Fatalf("expanded %v, want %v", got, want)
+	}
+}
+
 // A path named both directly and via its parent directory is unlocked once.
 func TestExpandUnlockTargetsDedupes(t *testing.T) {
 	root := fakeRepo(t)
