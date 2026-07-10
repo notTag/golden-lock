@@ -22,8 +22,8 @@ func TestConfirmLargeSweep(t *testing.T) {
 		{"  y  \n", true},
 		{"n\n", false},
 		{"no\n", false},
-		{"\n", false},   // bare Enter
-		{"", false},     // EOF / closed pipe
+		{"\n", false}, // bare Enter
+		{"", false},   // EOF / closed pipe
 		{"maybe\n", false},
 		{"yep\n", false},
 	}
