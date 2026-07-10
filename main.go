@@ -293,10 +293,56 @@ func isRepoRoot(root, input string) bool {
 }
 
 // runLock implements `lock [<file>...]`: discover repo root, hash each file,
+// lockSweepWarnThreshold is the file count above which a directory sweep (e.g.
+// `lock .`) asks for confirmation before freezing. It guards against an
+// accidental repo-wide lock pulling in build output / dependencies; it is not a
+// hard limit — the operator confirms interactively, or passes --yes, to proceed.
+// ponytail: fixed threshold, promote to a flag only if someone needs to tune it.
+const lockSweepWarnThreshold = 100
+
+// stdinIsTerminal reports whether stdin is an interactive terminal. A large
+// sweep in a non-interactive context (CI, a pipe) must refuse rather than block
+// on a prompt no one can answer.
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// confirmLargeSweep warns that a directory sweep will freeze every regular file
+// on disk under dirs (regardless of .gitignore) and returns true only if the
+// reader answers yes. It reads one line; anything but y/yes — including an empty
+// line or EOF — is a No.
+func confirmLargeSweep(w io.Writer, in io.Reader, dirs []string, fileCount int) bool {
+	fmt.Fprintf(w, "%s lock: about to lock %d files under %s.\n", progName(), fileCount, strings.Join(dirs, ", "))
+	fmt.Fprint(w, "This freezes EVERY regular file on disk there — including build output and\n")
+	fmt.Fprint(w, "dependencies, regardless of .gitignore — and each must be unlocked before it\n")
+	fmt.Fprint(w, "can be edited again.\n")
+	fmt.Fprint(w, "Proceed? [y/N]: ")
+	var response string
+	if _, err := fmt.Fscanln(in, &response); err != nil {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(response))
+	return answer == "y" || answer == "yes"
+}
+
+// runLock implements `lock [-y] [<path>...]`: discover repo root, hash each file,
 // upsert manifest entries, persist the manifest, then lock the files + the
 // manifest. With no file arguments, the lock set is gathered from
 // golden-lock/proposal-locks/. Returns a write exit code.
 func runLock(args []string) int {
+	fs := flag.NewFlagSet("lock", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	skipSweepPrompt := fs.Bool("yes", false, "skip the confirmation prompt for a large directory sweep")
+	fs.BoolVar(skipSweepPrompt, "y", false, "shorthand for --yes")
+	if err := fs.Parse(args); err != nil {
+		return ExitWriteArgs
+	}
+	args = fs.Args()
+
 	if !IsRoot() {
 		fmt.Fprintf(os.Stderr, "%s lock: must run as root (use sudo)\n", progName())
 		return ExitWriteNotRoot
@@ -329,6 +375,17 @@ func runLock(args []string) int {
 		}
 	}
 
+	// Note which inputs are directories BEFORE expanding, so a large sweep can be
+	// confirmed below. `lock .` in particular pulls in build output and
+	// dependencies regardless of .gitignore (the expansion walks the filesystem,
+	// not git), so an accidental repo-wide lock is a real footgun.
+	var sweptDirs []string
+	for _, input := range args {
+		if info, statErr := os.Lstat(input); statErr == nil && info.IsDir() {
+			sweptDirs = append(sweptDirs, input)
+		}
+	}
+
 	// Expand any directory arguments into their contained regular files so the
 	// freeze-then-hash flow below runs per file, one manifest entry each (feat-006).
 	args, err = expandLockTargets(root, args)
@@ -339,6 +396,21 @@ func runLock(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "%s lock: nothing to lock — the given path(s) held no regular files (empty directory, or only dotfiles/symlinks)\n", progName())
 		return ExitWriteArgs
+	}
+
+	// Confirm before freezing a large tree swept from a directory argument. In a
+	// non-interactive context (CI, a pipe) there is no one to answer, so refuse
+	// and point at --yes rather than hang. --yes skips the prompt outright.
+	if len(sweptDirs) > 0 && len(args) > lockSweepWarnThreshold && !*skipSweepPrompt {
+		if !stdinIsTerminal() {
+			fmt.Fprintf(os.Stderr, "%s lock: refusing to lock %d files swept from %s without confirmation; re-run with --yes to proceed non-interactively\n",
+				progName(), len(args), strings.Join(sweptDirs, ", "))
+			return ExitWriteArgs
+		}
+		if !confirmLargeSweep(os.Stderr, os.Stdin, sweptDirs, len(args)) {
+			fmt.Fprintf(os.Stderr, "%s lock: aborted\n", progName())
+			return ExitWriteArgs
+		}
 	}
 
 	// Distinguish a genuinely absent manifest (start fresh) from a present but
@@ -678,10 +750,13 @@ USAGE:
 COMMANDS:
     setup              Scaffold %s/ for the proposal-locks workflow and
                        write a getting-started guide. Needs no privilege.
-    lock   [<path>...] Hash each file, record it in %s, then root-own + chmod 444
+    lock   [-y] [<path>...]
+                       Hash each file, record it in %s, then root-own + chmod 444
                        the file(s) and the manifest. Requires sudo. A directory
-                       path locks every regular file under it, recursively. With
-                       no paths, locks every path listed under %s/.
+                       path locks every regular file under it, recursively — and
+                       a large sweep (e.g. 'lock .', which ignores .gitignore)
+                       prompts for confirmation first; pass -y/--yes to skip it.
+                       With no paths, locks every path listed under %s/.
     unlock [<path>...] Remove file(s) from the manifest and restore writable
                        ownership/permissions. Requires sudo. A directory path
                        unlocks the locked files beneath it. With no paths,
