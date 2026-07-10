@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -92,5 +93,75 @@ func TestExpandLockTargetsDedupes(t *testing.T) {
 	want := []string{"core/a.go"}
 	if gotRel := relForRoot(t, root, got); !equalStrings(gotRel, want) {
 		t.Fatalf("expanded %v, want %v", gotRel, want)
+	}
+}
+
+// A directory unlock argument expands to exactly the manifest entries beneath
+// it — untracked files on disk and entries outside the directory are ignored
+// (feat-006).
+func TestExpandUnlockTargetsDirExpandsFromManifest(t *testing.T) {
+	root := fakeRepo(t)
+	writeFile(t, root, "core/a.go", "package a")
+	writeFile(t, root, "core/sub/b.go", "package b")
+	writeFile(t, root, "core/untracked.go", "package u") // on disk, NOT locked
+	m := &Manifest{Root: root}
+	m.Upsert("core/a.go", "h1")
+	m.Upsert("core/sub/b.go", "h2")
+	m.Upsert("other/c.go", "h3") // outside core — must not be unlocked
+
+	got, err := expandUnlockTargets(m, root, []string{filepath.Join(root, "core")})
+	if err != nil {
+		t.Fatalf("expandUnlockTargets: %v", err)
+	}
+	sort.Strings(got)
+	want := []string{"core/a.go", "core/sub/b.go"}
+	if !equalStrings(got, want) {
+		t.Fatalf("expanded %v, want %v", got, want)
+	}
+}
+
+// A directory with no locked files under it is skipped, not an error, so it
+// yields nothing (the caller turns an all-empty result into a clear message).
+func TestExpandUnlockTargetsEmptyDirSkipped(t *testing.T) {
+	root := fakeRepo(t)
+	writeFile(t, root, "core/a.go", "package a") // exists on disk, but not locked
+	m := &Manifest{Root: root}
+	m.Upsert("other/c.go", "h1")
+
+	got, err := expandUnlockTargets(m, root, []string{filepath.Join(root, "core")})
+	if err != nil {
+		t.Fatalf("expandUnlockTargets: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("dir with no locked files should yield nothing, got %v", got)
+	}
+}
+
+// An explicitly-named file that is not locked is still a hard argument error —
+// unlock never fabricates work for a path it did not lock.
+func TestExpandUnlockTargetsUntrackedFileErrors(t *testing.T) {
+	root := fakeRepo(t)
+	file := writeFile(t, root, "core/a.go", "package a")
+	m := &Manifest{Root: root} // empty — a.go is not locked
+
+	if _, err := expandUnlockTargets(m, root, []string{file}); err == nil {
+		t.Fatal("expected an error for an untracked file argument, got nil")
+	}
+}
+
+// A path named both directly and via its parent directory is unlocked once.
+func TestExpandUnlockTargetsDedupes(t *testing.T) {
+	root := fakeRepo(t)
+	file := writeFile(t, root, "core/a.go", "package a")
+	m := &Manifest{Root: root}
+	m.Upsert("core/a.go", "h1")
+
+	got, err := expandUnlockTargets(m, root, []string{filepath.Join(root, "core"), file})
+	if err != nil {
+		t.Fatalf("expandUnlockTargets: %v", err)
+	}
+	want := []string{"core/a.go"}
+	if !equalStrings(got, want) {
+		t.Fatalf("expanded %v, want %v", got, want)
 	}
 }

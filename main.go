@@ -181,6 +181,52 @@ func expandLockTargets(inputs []string) ([]string, error) {
 	return files, nil
 }
 
+// expandUnlockTargets resolves each unlock argument to the manifest-relative
+// paths it refers to. A directory argument expands to exactly the manifest
+// entries beneath it — untracked files on disk are ignored, preserving unlock's
+// rule that it never touches a file it did not lock — and a directory with no
+// locked files under it is reported and skipped. A file argument keeps the
+// strict rule that an explicitly-named path must itself be locked, else it is an
+// argument error. Results are de-duplicated so a path named both directly and
+// via a parent directory is unlocked once (feat-006).
+func expandUnlockTargets(m *Manifest, root string, inputs []string) ([]string, error) {
+	var relPaths []string
+	seen := make(map[string]bool)
+	add := func(relPath string) {
+		if seen[relPath] {
+			return
+		}
+		seen[relPath] = true
+		relPaths = append(relPaths, relPath)
+	}
+
+	for _, input := range inputs {
+		relPath, err := NormalizePath(root, input)
+		if err != nil {
+			return nil, fmt.Errorf("bad path %q: %w", input, err)
+		}
+		// Detect a directory via lstat so a symlinked "directory" is not followed.
+		info, statErr := os.Lstat(input)
+		if statErr == nil && info.IsDir() {
+			under := m.entriesUnder(relPath)
+			if len(under) == 0 {
+				fmt.Fprintf(os.Stderr, "note: %s has no locked files under it; skipping\n", relPath)
+				continue
+			}
+			for _, entryPath := range under {
+				add(entryPath)
+			}
+			continue
+		}
+		// A plain file argument must itself be locked (unchanged strict rule).
+		if m.Find(relPath) < 0 {
+			return nil, fmt.Errorf("%q is not listed in %s", relPath, LockfileName)
+		}
+		add(relPath)
+	}
+	return relPaths, nil
+}
+
 // runLock implements `lock [<file>...]`: discover repo root, hash each file,
 // upsert manifest entries, persist the manifest, then lock the files + the
 // manifest. With no file arguments, the lock set is gathered from
@@ -427,19 +473,16 @@ func runUnlock(args []string) int {
 
 	// Resolve all paths AND verify membership BEFORE mutating anything (#6).
 	// An untracked arg is an arg error (5); we must not chown/chmod any file
-	// (nor leave earlier args already unlocked) when a later arg is rejected.
-	relPaths := make([]string, 0, len(fileArgs))
-	for _, f := range fileArgs {
-		relPath, err := NormalizePath(root, f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s unlock: bad path %q: %v\n", progName(), f, err)
-			return ExitWriteArgs
-		}
-		if m.Find(relPath) < 0 {
-			fmt.Fprintf(os.Stderr, "%s unlock: %q is not listed in %s\n", progName(), relPath, LockfileName)
-			return ExitWriteArgs
-		}
-		relPaths = append(relPaths, relPath)
+	// (nor leave earlier args already unlocked) when a later arg is rejected. A
+	// directory arg expands to the manifest entries beneath it (feat-006).
+	relPaths, err := expandUnlockTargets(m, root, fileArgs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s unlock: %v\n", progName(), err)
+		return ExitWriteArgs
+	}
+	if len(relPaths) == 0 {
+		fmt.Fprintf(os.Stderr, "%s unlock: nothing to unlock — the given path(s) held no locked files\n", progName())
+		return ExitWriteArgs
 	}
 
 	for _, relPath := range relPaths {
@@ -574,8 +617,9 @@ COMMANDS:
                        the file(s) and the manifest. Requires sudo. A directory
                        path locks every regular file under it, recursively. With
                        no paths, locks every path listed under %s/.
-    unlock [<file>...] Remove file(s) from the manifest and restore writable
-                       ownership/permissions. Requires sudo. With no files,
+    unlock [<path>...] Remove file(s) from the manifest and restore writable
+                       ownership/permissions. Requires sudo. A directory path
+                       unlocks the locked files beneath it. With no paths,
                        unlocks every path listed under %s/.
     verify             Recompute the SHA-256 of every manifest entry and compare.
                        Needs no privilege (safe for CI).
