@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,6 +101,28 @@ func TestLockDot_ExcludesStateDir(t *testing.T) {
 	}
 	if !sawCore {
 		t.Errorf("manifest missing core.go; lock . should still lock real files")
+	}
+}
+
+// A large directory sweep freezes without the interactive prompt when -y/--yes
+// is passed, so scripted or CI locks of big trees proceed instead of blocking
+// on a confirmation no one is there to answer (feat-006 sweep guard).
+func TestLockDir_LargeSweepYesFlagSkipsPrompt(t *testing.T) {
+	requireRoot(t)
+	root := fakeRepo(t)
+	const total = lockSweepWarnThreshold + 5 // over the threshold, so the guard engages
+	for i := 0; i < total; i++ {
+		writeFile(t, root, fmt.Sprintf("big/f%03d.txt", i), "x\n")
+	}
+	chdirTo(t, root)
+
+	if code := runLock([]string{"-y", "big"}); code != ExitWriteOK {
+		t.Fatalf("runLock(-y big) = %d, want %d", code, ExitWriteOK)
+	}
+	t.Cleanup(func() { _ = runUnlock([]string{"big"}) })
+
+	if got := verifiedOKPaths(t, root); len(got) != total {
+		t.Fatalf("locked %d files, want %d", len(got), total)
 	}
 }
 
