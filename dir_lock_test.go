@@ -17,12 +17,34 @@ func TestExpandLockTargetsRecursesAndSkipsDotEntries(t *testing.T) {
 	writeFile(t, root, "core/.hidden", "secret")
 	writeFile(t, root, "core/.cache/junk", "junk")
 
-	got, err := expandLockTargets([]string{filepath.Join(root, "core")})
+	got, err := expandLockTargets(root, []string{filepath.Join(root, "core")})
 	if err != nil {
 		t.Fatalf("expandLockTargets: %v", err)
 	}
 
 	want := []string{"core/a.go", "core/sub/b.go"}
+	if gotRel := relForRoot(t, root, got); !equalStrings(gotRel, want) {
+		t.Fatalf("expanded %v, want %v", gotRel, want)
+	}
+}
+
+// A repo-root `lock .` must not sweep in Golden Lock's own state directory
+// (golden-lock/manifest + proposal-locks); locking the manifest as user content
+// would leave the rewritten live manifest inconsistent with its recorded hash
+// and break verify (Codex review P1).
+func TestExpandLockTargetsExcludesStateDir(t *testing.T) {
+	root := fakeRepo(t)
+	writeFile(t, root, "core/a.go", "package a")
+	writeFile(t, root, "golden-lock/golden.lock", "sha256  core/a.go")
+	writeFile(t, root, "golden-lock/proposal-locks/core.txt", "core/a.go")
+
+	got, err := expandLockTargets(root, []string{root})
+	if err != nil {
+		t.Fatalf("expandLockTargets: %v", err)
+	}
+
+	// Only the real source file; nothing under golden-lock/.
+	want := []string{"core/a.go"}
 	if gotRel := relForRoot(t, root, got); !equalStrings(gotRel, want) {
 		t.Fatalf("expanded %v, want %v", gotRel, want)
 	}
@@ -38,7 +60,7 @@ func TestExpandLockTargetsSkipsSymlinks(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	got, err := expandLockTargets([]string{filepath.Join(root, "core")})
+	got, err := expandLockTargets(root, []string{filepath.Join(root, "core")})
 	if err != nil {
 		t.Fatalf("expandLockTargets: %v", err)
 	}
@@ -50,7 +72,7 @@ func TestExpandLockTargetsSkipsSymlinks(t *testing.T) {
 	}
 
 	// A symlink passed directly as an input is also skipped, not followed.
-	fromLink, err := expandLockTargets([]string{filepath.Join(root, "core", "link.go")})
+	fromLink, err := expandLockTargets(root, []string{filepath.Join(root, "core", "link.go")})
 	if err != nil {
 		t.Fatalf("expandLockTargets(link): %v", err)
 	}
@@ -69,7 +91,7 @@ func TestExpandLockTargetsEmptyDirYieldsNothing(t *testing.T) {
 	writeFile(t, root, "dotsonly/.only", "x")
 
 	for _, dir := range []string{"empty", "dotsonly"} {
-		got, err := expandLockTargets([]string{filepath.Join(root, dir)})
+		got, err := expandLockTargets(root, []string{filepath.Join(root, dir)})
 		if err != nil {
 			t.Fatalf("expandLockTargets(%s): %v", dir, err)
 		}
@@ -85,7 +107,7 @@ func TestExpandLockTargetsDedupes(t *testing.T) {
 	root := fakeRepo(t)
 	file := writeFile(t, root, "core/a.go", "package a")
 
-	got, err := expandLockTargets([]string{filepath.Join(root, "core"), file})
+	got, err := expandLockTargets(root, []string{filepath.Join(root, "core"), file})
 	if err != nil {
 		t.Fatalf("expandLockTargets: %v", err)
 	}

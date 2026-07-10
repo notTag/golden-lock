@@ -119,9 +119,18 @@ func gatherProposalLocks(root string) ([]string, error) {
 // listing rules (gatherProposalLocks). Symlinks — whether an input itself or an
 // entry found during the walk — are skipped rather than locked; the per-file
 // freeze flow additionally refuses any symlinked path component, so this is
-// defence in depth (feat-006). Results are absolute, cleaned, and de-duplicated
-// so a file reached both explicitly and via a directory is only locked once.
-func expandLockTargets(inputs []string) ([]string, error) {
+// defence in depth (feat-006). Golden Lock's own state directory (golden-lock/,
+// holding the manifest and proposal-locks) is pruned so `lock .` never freezes
+// and hashes the manifest as user content — which would leave the rewritten
+// live manifest inconsistent with its own recorded hash and fail verify. Results
+// are absolute, cleaned, and de-duplicated so a file reached both explicitly and
+// via a directory is only locked once.
+func expandLockTargets(root string, inputs []string) ([]string, error) {
+	stateDirAbs, err := filepath.Abs(filepath.Join(root, GoldenLockDir))
+	if err != nil {
+		return nil, err
+	}
+
 	var files []string
 	seen := make(map[string]bool)
 	add := func(path string) {
@@ -153,6 +162,13 @@ func expandLockTargets(inputs []string) ([]string, error) {
 		walkErr := filepath.Walk(input, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
+			}
+			// Prune Golden Lock's own state dir (golden-lock/) so a root-level
+			// `lock .` never treats the manifest / proposal-locks as user content.
+			if info.IsDir() {
+				if abs, absErr := filepath.Abs(path); absErr == nil && abs == stateDirAbs {
+					return filepath.SkipDir
+				}
 			}
 			// Skip dot-entries anywhere below the input root (the root itself was
 			// explicitly named, so it is never skipped). A dot-directory is pruned
@@ -303,7 +319,7 @@ func runLock(args []string) int {
 
 	// Expand any directory arguments into their contained regular files so the
 	// freeze-then-hash flow below runs per file, one manifest entry each (feat-006).
-	args, err = expandLockTargets(args)
+	args, err = expandLockTargets(root, args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s lock: %v\n", progName(), err)
 		return ExitWriteIO
