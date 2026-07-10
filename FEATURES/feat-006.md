@@ -1,7 +1,8 @@
 # [006] Allow directories to be locked
 
-- Status: open
+- Status: Done
 - Created: 2026-07-06
+- Done: 2026-07-10
 - Bump: minor
 
 ## What
