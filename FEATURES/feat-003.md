@@ -1,7 +1,8 @@
 # [003] Rename project to golden-lock and generalize to any file
 
-- Status: open
+- Status: Done
 - Created: 2026-06-20
+- Done: 2026-07-10
 - Priority: high
 - Bump: major
 
@@ -20,17 +21,17 @@ docs, and CLI framing assume "tests". Users want to lock any critical file
 `golden-lock`.
 
 ## Done When
-- [ ] Binary/CLI renamed `golden-test` → `golden-lock` (build output + any
+- [x] Binary/CLI renamed `golden-test` → `golden-lock` (build output + any
       embedded usage/help strings)
-- [ ] Go module path and package identifiers updated to `golden-lock`
-- [ ] Repo directory + git remote / module references updated
-- [ ] User-facing CLI accepts an arbitrary file path to lock (not gated to
+- [x] Go module path and package identifiers updated to `golden-lock`
+- [x] Repo directory + git remote / module references updated
+- [x] User-facing CLI accepts an arbitrary file path to lock (not gated to
       detected test files)
-- [ ] Docs (README, PRD, ARCH, FLOW, definitions) reworded from "test files"
+- [x] Docs (README, PRD, ARCH, FLOW, definitions) reworded from "test files"
       to "any file"; locking-model semantics unchanged
-- [ ] Existing golden-test invariants (immutable flag, 444 perms, manifest,
+- [x] Existing golden-test invariants (immutable flag, 444 perms, manifest,
       verify) still pass on a locked non-test file
-- [ ] `.golden.<ext>` sibling naming convention generalized beyond test files
+- [x] `.golden.<ext>` sibling naming convention generalized beyond test files
 
 ## Notes
 - Mechanism is already file-agnostic (see hash.go, immutable.go, lockfile.go) —

@@ -1,7 +1,8 @@
 # [005] golden-lock/ dir — bulk lock from proposal-locks lists
 
-- Status: open
+- Status: Done
 - Created: 2026-06-25
+- Done: 2026-07-10
 
 ## What
 Add a `golden-lock/` directory that holds golden-lock's state: the manifest
