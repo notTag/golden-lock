@@ -30,6 +30,7 @@ golden-lock <command> [arguments]
 | `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
 | `unlock <file>...` | Remove file(s) from the manifest and restore writable ownership/permissions. The sanctioned change path. | **sudo** |
 | `verify` | Recompute the SHA-256 of every manifest entry and compare. Safe for CI. | none |
+| `list` | Print the path of every file recorded in the manifest. Hashes nothing — use `verify` for that. | none |
 
 ### Command status
 
@@ -40,6 +41,7 @@ The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implemen
 | `lock [<file>...]` | ✅ Implemented | Hash, record, root-own `444` files + manifest. No-arg form locks every path listed under `golden-lock/proposal-locks/`. |
 | `unlock <file>...` | ✅ Implemented | Removes entries + restores writable perms. Covers the PRD's `remove`. |
 | `verify` | ✅ Implemented | CI gate. |
+| `list` | ✅ Implemented | Manifest paths only; no hashing, no lock-state check. |
 | `add <file>` | ☐ TODO | Single-file `lock` that errors if already listed (`lock` skips). |
 | `remove <file>` | ☐ TODO | Formal single-file unlock (subsumed by `unlock` today). |
 | `apply` | ☐ TODO | Re-assert root-`444` on all listed files; git-hook / bootstrap verb. |
