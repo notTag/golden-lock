@@ -738,6 +738,39 @@ func runVerify(args []string) int {
 	return code
 }
 
+// runList implements `list`: prints the repo-root-relative path of every
+// manifest entry. It reads the same trust anchor as verify but hashes nothing,
+// so an entry appears here whether or not the file on disk still matches.
+func runList(args []string) int {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s list: cannot determine working directory: %v\n", progName(), err)
+		return ExitVerifyLockfile
+	}
+	root, err := FindRepoRoot(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s list: cannot find repo root: %v\n", progName(), err)
+		return ExitVerifyLockfile
+	}
+
+	manifest, err := ReadManifest(root)
+	if err != nil {
+		absentOrMalformed := os.IsNotExist(err) || errors.Is(err, ErrManifestMalformed)
+		if absentOrMalformed {
+			fmt.Fprintf(os.Stderr, "%s list: %s absent or malformed\n", progName(), LockfileName)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s list: %s present but unreadable: %v\n", progName(), LockfileName, err)
+		}
+		return ExitVerifyLockfile
+	}
+
+	for _, entry := range manifest.Entries {
+		fmt.Println(entry.Path)
+	}
+	fmt.Printf("%d file(s) locked\n", len(manifest.Entries))
+	return ExitVerifyOK
+}
+
 // usage prints help text to w and is invoked for --help, no args, or an
 // unknown subcommand.
 func usage() {
@@ -763,13 +796,16 @@ COMMANDS:
                        unlocks every path listed under %s/.
     verify             Recompute the SHA-256 of every manifest entry and compare.
                        Needs no privilege (safe for CI).
+    list               Print the path of every file recorded in %s.
+                       Hashes nothing — use verify to check them. Needs no privilege.
     version            Print the version plus build info (revision, Go version).
                        Also available as --version / -v. Needs no privilege.
 
 EXIT CODES:
     verify:  0 ok | 1 hash mismatch | 2 missing file | 3 absent/malformed manifest
+    list:    0 ok | 3 absent/malformed manifest
     lock/unlock:  0 ok | 4 not root | 5 arg error | 6 io failure
-`, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir), filepath.Join(GoldenLockDir, ProposalLocksDir))
+`, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir), filepath.Join(GoldenLockDir, ProposalLocksDir), LockfileRelPath)
 }
 
 // dispatch routes argv (excluding the program name) to the matching run* func
@@ -788,6 +824,8 @@ func dispatch(args []string) int {
 		return runUnlock(args[1:])
 	case "verify":
 		return runVerify(args[1:])
+	case "list":
+		return runList(args[1:])
 	case "--version", "-v", "version":
 		return runVersion(args[1:])
 	case "--help", "-h", "help":
