@@ -781,6 +781,9 @@ USAGE:
     %s <command> [arguments]
 
 COMMANDS:
+    init               Create an empty %s in the current directory so a
+                       directory outside version control can be locked.
+                       Refused inside a git repo. Needs no privilege.
     setup              Scaffold %s/ for the proposal-locks workflow and
                        write a getting-started guide. Needs no privilege.
     lock   [-y] [<path>...]
@@ -805,7 +808,7 @@ EXIT CODES:
     verify:  0 ok | 1 hash mismatch | 2 missing file | 3 absent/malformed manifest
     list:    0 ok | 3 absent/malformed manifest
     lock/unlock:  0 ok | 4 not root | 5 arg error | 6 io failure
-`, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir), filepath.Join(GoldenLockDir, ProposalLocksDir), LockfileRelPath)
+`, p, p, LockfileRelPath, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir), filepath.Join(GoldenLockDir, ProposalLocksDir), LockfileRelPath)
 }
 
 // dispatch routes argv (excluding the program name) to the matching run* func
@@ -816,6 +819,8 @@ func dispatch(args []string) int {
 		return ExitWriteArgs
 	}
 	switch args[0] {
+	case "init":
+		return runInit(args[1:])
 	case "setup":
 		return runSetup(args[1:])
 	case "lock":

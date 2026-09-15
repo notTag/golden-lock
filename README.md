@@ -27,6 +27,7 @@ golden-lock <command> [arguments]
 
 | Command | Effect | Privilege |
 |---|---|---|
+| `init` | Create an empty `golden-lock/golden.lock` in the current directory, making it the root. For directories outside version control (no `.git` to anchor on). Refused inside a git repo; never overwrites an existing manifest. | none |
 | `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
 | `unlock <file>...` | Remove file(s) from the manifest and restore writable ownership/permissions. The sanctioned change path. | **sudo** |
 | `verify` | Recompute the SHA-256 of every manifest entry and compare. Safe for CI. | none |
@@ -48,7 +49,7 @@ The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implemen
 | `rehash <file>` | ☐ TODO | Recompute stored hash after a blessed edit. |
 | `status` | ☐ TODO | Per-file hash ✅/❌ and lock state; `--json`. |
 | `list` | ☐ TODO | Print tracked paths; `--json`. |
-| `init` | ☐ TODO | Create an empty manifest under `golden-lock/`. |
+| `init` | ✅ Implemented | Empty manifest in the current dir; anchors the root outside git. |
 | `install-hooks` | ☐ TODO | Append-safe `post-checkout` / `post-merge` → `apply`. |
 | `version` | ✅ Implemented | Print version + build info; also `--version` / `-v`. |
 
