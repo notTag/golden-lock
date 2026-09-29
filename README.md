@@ -27,7 +27,7 @@ golden-lock <command> [arguments]
 
 | Command | Effect | Privilege |
 |---|---|---|
-| `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
+| `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Outside a project (no `.git` and no manifest above), the working directory becomes the root and the manifest is created there. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
 | `unlock <file>...` | Remove file(s) from the manifest and restore writable ownership/permissions. The sanctioned change path. | **sudo** |
 | `verify` | Recompute the SHA-256 of every manifest entry and compare. Safe for CI. | none |
 | `list` | Print the path of every file recorded in the manifest. Hashes nothing — use `verify` for that. | none |
@@ -48,7 +48,7 @@ The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implemen
 | `rehash <file>` | ☐ TODO | Recompute stored hash after a blessed edit. |
 | `status` | ☐ TODO | Per-file hash ✅/❌ and lock state; `--json`. |
 | `list` | ☐ TODO | Print tracked paths; `--json`. |
-| `init` | ☐ TODO | Create an empty manifest under `golden-lock/`. |
+| `init` | ✖ Dropped | Unnecessary: `lock` creates the manifest in the working directory when there is no project root. |
 | `install-hooks` | ☐ TODO | Append-safe `post-checkout` / `post-merge` → `apply`. |
 | `version` | ✅ Implemented | Print version + build info; also `--version` / `-v`. |
 

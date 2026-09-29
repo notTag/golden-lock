@@ -292,6 +292,24 @@ func isRepoRoot(root, input string) bool {
 	return filepath.Clean(rootAbs) == filepath.Clean(inputAbs)
 }
 
+// lockTargetRoot resolves the root that `lock` records paths against. A repo
+// (a `.git` ancestor, or an existing manifest from an earlier lock) anchors it as
+// usual. When neither marker exists anywhere above, the directory is not a
+// project at all, so the working directory becomes the root and the manifest is
+// born there on this lock — locking a loose file never needs a separate
+// bootstrap step. looseDir reports that fallback, so the caller can say where the
+// manifest is about to appear.
+//
+// Only `lock` falls back: it is the one command that creates a manifest. The
+// read commands (verify, list) and unlock still require a real root, since
+// without a manifest there is nothing for them to act on.
+func lockTargetRoot(cwd string) (root string, looseDir bool) {
+	if repoRoot, err := FindRepoRoot(cwd); err == nil {
+		return repoRoot, false
+	}
+	return cwd, true
+}
+
 // runLock implements `lock [<file>...]`: discover repo root, hash each file,
 // lockSweepWarnThreshold is the file count above which a directory sweep (e.g.
 // `lock .`) asks for confirmation before freezing. It guards against an
@@ -353,10 +371,9 @@ func runLock(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s lock: cannot determine working directory: %v\n", progName(), err)
 		return ExitWriteIO
 	}
-	root, err := FindRepoRoot(cwd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s lock: cannot find repo root: %v\n", progName(), err)
-		return ExitWriteArgs
+	root, looseDir := lockTargetRoot(cwd)
+	if looseDir {
+		fmt.Printf("note: %s is not in a project (no .git, no existing manifest); locking against this directory and creating %s here\n", cwd, LockfileRelPath)
 	}
 
 	// No explicit files → lock everything listed under golden-lock/proposal-locks/
@@ -790,6 +807,9 @@ COMMANDS:
                        a large sweep (e.g. 'lock .', which ignores .gitignore)
                        prompts for confirmation first; pass -y/--yes to skip it.
                        With no paths, locks every path listed under %s/.
+                       Outside a project (no .git, no manifest above), the
+                       working directory becomes the root and the manifest is
+                       created there — no bootstrap step needed.
     unlock [<path>...] Remove file(s) from the manifest and restore writable
                        ownership/permissions. Requires sudo. A directory path
                        unlocks the locked files beneath it. With no paths,
