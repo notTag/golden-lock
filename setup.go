@@ -31,10 +31,13 @@ func runSetup(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s setup: cannot determine working directory: %v\n", progName(), err)
 		return ExitWriteIO
 	}
-	root, err := FindRepoRoot(cwd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s setup: cannot find repo root: %v\n", progName(), err)
-		return ExitWriteArgs
+	// setup creates state, so it takes the same loose-directory fallback as lock:
+	// outside a project the working directory becomes the root. Without it the
+	// no-arg proposal-locks flow would be unreachable there — setup could not make
+	// the directory, and `lock` with no paths would find nothing listed.
+	root, looseDir := rootForNewManifest(cwd)
+	if looseDir {
+		fmt.Fprintf(os.Stderr, "note: %s is not in a project (no .git, no existing manifest); scaffolding in this directory\n", cwd)
 	}
 
 	proposalRel := filepath.Join(GoldenLockDir, ProposalLocksDir)

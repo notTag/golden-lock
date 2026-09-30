@@ -292,25 +292,28 @@ func isRepoRoot(root, input string) bool {
 	return filepath.Clean(rootAbs) == filepath.Clean(inputAbs)
 }
 
-// lockTargetRoot resolves the root that `lock` records paths against. A repo
-// (a `.git` ancestor, or an existing manifest from an earlier lock) anchors it as
-// usual. When neither marker exists anywhere above, the directory is not a
-// project at all, so the working directory becomes the root and the manifest is
-// born there on this lock — locking a loose file never needs a separate
-// bootstrap step. looseDir reports that fallback, so the caller can say where the
-// manifest is about to appear.
+// rootForNewManifest resolves the root that the state-creating commands (`lock`,
+// `setup`) record paths against. A repo — a `.git` ancestor, or an existing
+// manifest from an earlier lock — anchors it as usual. When neither marker exists
+// anywhere above, the directory is not a project at all, so the working directory
+// becomes the root and the state is born there; locking a loose file needs no
+// separate bootstrap step. looseDir reports that fallback so the caller can say
+// where the state is about to appear.
 //
-// Only `lock` falls back: it is the one command that creates a manifest. The
-// read commands (verify, list) and unlock still require a real root, since
-// without a manifest there is nothing for them to act on.
-func lockTargetRoot(cwd string) (root string, looseDir bool) {
+// Only the creating commands fall back. verify, list and unlock still require a
+// real root: without a manifest there is nothing for them to act on.
+//
+// ponytail: the marker search only walks UP, so locking work/f2 from a directory
+// ABOVE an existing work/golden-lock/golden.lock creates a second, independent
+// manifest instead of joining the first, and neither one then covers both files.
+// Scan downward for an existing manifest if that collision shows up in practice.
+func rootForNewManifest(cwd string) (root string, looseDir bool) {
 	if repoRoot, err := FindRepoRoot(cwd); err == nil {
 		return repoRoot, false
 	}
 	return cwd, true
 }
 
-// runLock implements `lock [<file>...]`: discover repo root, hash each file,
 // lockSweepWarnThreshold is the file count above which a directory sweep (e.g.
 // `lock .`) asks for confirmation before freezing. It guards against an
 // accidental repo-wide lock pulling in build output / dependencies; it is not a
@@ -371,10 +374,7 @@ func runLock(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s lock: cannot determine working directory: %v\n", progName(), err)
 		return ExitWriteIO
 	}
-	root, looseDir := lockTargetRoot(cwd)
-	if looseDir {
-		fmt.Printf("note: %s is not in a project (no .git, no existing manifest); locking against this directory and creating %s here\n", cwd, LockfileRelPath)
-	}
+	root, looseDir := rootForNewManifest(cwd)
 
 	// No explicit files → lock everything listed under golden-lock/proposal-locks/
 	// (each file there is a newline-separated list of repo paths). Missing listed
@@ -430,6 +430,28 @@ func runLock(args []string) int {
 		}
 	}
 
+	// Normalize EVERY path before freezing anything. The freeze loop below turns
+	// each file root:0/444/immutable one at a time and publishes the manifest only
+	// at the very end, so a path rejected mid-loop would leave earlier files frozen
+	// with nothing recording them — and unlock resolves its root FROM that manifest,
+	// so in a loose directory those files could then only be freed by hand as root.
+	relPaths := make([]string, len(args))
+	for i, f := range args {
+		relPath, err := NormalizePath(root, f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s lock: bad path %q: %v\n", progName(), f, err)
+			return ExitWriteArgs
+		}
+		relPaths[i] = relPath
+	}
+
+	// Announce the loose-directory fallback only once every argument is accepted,
+	// so a run that is about to fail never claims a manifest is being created.
+	// Diagnostics go to stderr, like every other lock pre-flight notice.
+	if looseDir {
+		fmt.Fprintf(os.Stderr, "note: %s is not in a project (no .git, no existing manifest); locking against this directory and creating %s here\n", cwd, LockfileRelPath)
+	}
+
 	// Distinguish a genuinely absent manifest (start fresh) from a present but
 	// malformed/corrupt one (#3). On malformed, ABORT — never overwrite the
 	// trust anchor and silently drop previously-locked entries.
@@ -468,12 +490,8 @@ func runLock(args []string) int {
 		}
 	}()
 
-	for _, f := range args {
-		relPath, err := NormalizePath(root, f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s lock: bad path %q: %v\n", progName(), f, err)
-			return ExitWriteArgs
-		}
+	for i, f := range args {
+		relPath := relPaths[i]
 		abs := m.AbsPath(relPath)
 		// O_RDWR so we can both freeze and hash; resolver refuses a symlink at
 		// ANY component (leaf or intermediate dir) — Vector A.
@@ -799,7 +817,8 @@ USAGE:
 
 COMMANDS:
     setup              Scaffold %s/ for the proposal-locks workflow and
-                       write a getting-started guide. Needs no privilege.
+                       write a getting-started guide. Outside a project it
+                       scaffolds in the working directory. Needs no privilege.
     lock   [-y] [<path>...]
                        Hash each file, record it in %s, then root-own + chmod 444
                        the file(s) and the manifest. Requires sudo. A directory
