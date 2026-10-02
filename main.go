@@ -125,13 +125,16 @@ func gatherProposalLocks(root string) ([]string, error) {
 // live manifest inconsistent with its own recorded hash and fail verify. Results
 // are absolute, cleaned, and de-duplicated so a file reached both explicitly and
 // via a directory is only locked once.
-func expandLockTargets(root string, inputs []string) ([]string, error) {
+// Unusable paths are returned as failures alongside any successfully expanded
+// files, so one bad input does not prevent independent files from being locked.
+func expandLockTargets(root string, inputs []string) ([]string, []lockFailure) {
 	stateDirAbs, err := filepath.Abs(filepath.Join(root, GoldenLockDir))
 	if err != nil {
-		return nil, err
+		return nil, []lockFailure{{root, err, ExitWriteIO}}
 	}
 
 	var files []string
+	var failures []lockFailure
 	seen := make(map[string]bool)
 	// De-duplicate on the cleaned ABSOLUTE path so the same file reached via a
 	// relative directory and an absolute argument (e.g. `lock core /repo/core/a.go`)
@@ -152,10 +155,11 @@ func expandLockTargets(root string, inputs []string) ([]string, error) {
 	for _, input := range inputs {
 		info, err := os.Lstat(input)
 		if err != nil {
-			return nil, fmt.Errorf("cannot stat %q: %w", input, err)
+			failures = append(failures, lockFailure{input, err, ExitWriteIO})
+			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			fmt.Fprintf(os.Stderr, "note: skipping %q: path is a symlink\n", input)
+			failures = append(failures, lockFailure{input, ErrSymlink, ExitWriteArgs})
 			continue
 		}
 		if !info.IsDir() {
@@ -173,7 +177,8 @@ func expandLockTargets(root string, inputs []string) ([]string, error) {
 		walkRoot := filepath.Clean(input)
 		walkErr := filepath.Walk(input, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				return err
+				failures = append(failures, lockFailure{path, err, ExitWriteIO})
+				return nil
 			}
 			// Prune Golden Lock's own state dir (golden-lock/) so a root-level
 			// `lock .` never treats the manifest / proposal-locks as user content.
@@ -195,10 +200,10 @@ func expandLockTargets(root string, inputs []string) ([]string, error) {
 			if info.IsDir() {
 				return nil
 			}
-			// Only regular files are lockable; symlinks and specials (fifos,
-			// devices, sockets) are silently passed over.
+			// Report symlinks as failed targets. Other special entries (fifos,
+			// devices, sockets) are excluded from directory sweeps.
 			if info.Mode()&os.ModeSymlink != 0 {
-				fmt.Fprintf(os.Stderr, "note: skipping %q: symlink\n", path)
+				failures = append(failures, lockFailure{path, ErrSymlink, ExitWriteArgs})
 				return nil
 			}
 			if info.Mode().IsRegular() {
@@ -207,10 +212,10 @@ func expandLockTargets(root string, inputs []string) ([]string, error) {
 			return nil
 		})
 		if walkErr != nil {
-			return nil, fmt.Errorf("walking %q: %w", input, walkErr)
+			failures = append(failures, lockFailure{input, walkErr, ExitWriteIO})
 		}
 	}
-	return files, nil
+	return files, failures
 }
 
 // expandUnlockTargets resolves each unlock argument to the manifest-relative
@@ -405,12 +410,12 @@ func runLock(args []string) int {
 
 	// Expand any directory arguments into their contained regular files so the
 	// freeze-then-hash flow below runs per file, one manifest entry each (feat-006).
-	args, err = expandLockTargets(root, args)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s lock: %v\n", progName(), err)
-		return ExitWriteIO
-	}
+	args, failures := expandLockTargets(root, args)
+	defer func() { reportLockFailures(failures) }()
 	if len(args) == 0 {
+		if len(failures) > 0 {
+			return lockFailureCode(failures)
+		}
 		fmt.Fprintf(os.Stderr, "%s lock: nothing to lock — the given path(s) held no regular files (empty directory, or only dotfiles/symlinks)\n", progName())
 		return ExitWriteArgs
 	}
@@ -430,26 +435,10 @@ func runLock(args []string) int {
 		}
 	}
 
-	// Normalize EVERY path before freezing anything. The freeze loop below turns
-	// each file root:0/444/immutable one at a time and publishes the manifest only
-	// at the very end, so a path rejected mid-loop would leave earlier files frozen
-	// with nothing recording them — and unlock resolves its root FROM that manifest,
-	// so in a loose directory those files could then only be freed by hand as root.
-	relPaths := make([]string, len(args))
-	for i, f := range args {
-		relPath, err := NormalizePath(root, f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s lock: bad path %q: %v\n", progName(), f, err)
-			return ExitWriteArgs
-		}
-		relPaths[i] = relPath
-	}
-
-	// Announce the loose-directory fallback only once every argument is accepted,
-	// so a run that is about to fail never claims a manifest is being created.
+	// Announce the root chosen for this attempted lock.
 	// Diagnostics go to stderr, like every other lock pre-flight notice.
 	if looseDir {
-		fmt.Fprintf(os.Stderr, "note: %s is not in a project (no .git, no existing manifest); locking against this directory and creating %s here\n", cwd, LockfileRelPath)
+		fmt.Fprintf(os.Stderr, "note: %s is not in a project (no .git, no existing manifest); using this directory as the root for %s\n", cwd, LockfileRelPath)
 	}
 
 	// Distinguish a genuinely absent manifest (start fresh) from a present but
@@ -468,101 +457,9 @@ func runLock(args []string) int {
 		}
 	}
 
-	// FREEZE-THEN-HASH (Vectors D+E). For each file: open via the symlink-free
-	// resolver (no swappable intermediate dir), FREEZE it first (fchown root:0 +
-	// fchmod 0444 on the fd), THEN hash the now-immutable fd, THEN record the
-	// entry. This eliminates the content-mutation window on the same inode (D):
-	// there is no writable interval after the hash is taken because the file is
-	// already 444 by then. We accumulate all entries and do a SINGLE
-	// WriteManifestLocked at the very end, so a mid-loop kill never publishes a
-	// manifest that asserts immutability over a not-yet-frozen file (E).
-	type locked struct {
-		relPath, hash string
-		f             *os.File
-		immutable     bool // false when the filesystem cannot store the flag
-	}
-	pending := make([]locked, 0, len(args))
-	defer func() {
-		for _, p := range pending {
-			if p.f != nil {
-				p.f.Close()
-			}
-		}
-	}()
-
-	for i, f := range args {
-		relPath := relPaths[i]
-		abs := m.AbsPath(relPath)
-		// O_RDWR so we can both freeze and hash; resolver refuses a symlink at
-		// ANY component (leaf or intermediate dir) — Vector A.
-		fh, err := openWritableResolved(root, relPath, abs)
-		if err != nil {
-			if errors.Is(err, ErrSymlink) {
-				fmt.Fprintf(os.Stderr, "%s lock: refusing %q: path (or a parent) is a symlink\n", progName(), f)
-				return ExitWriteArgs
-			}
-			fmt.Fprintf(os.Stderr, "%s lock: cannot open %q: %v\n", progName(), f, err)
-			return ExitWriteIO
-		}
-		// Freeze BEFORE hashing — no writable window after the hash (Vector D).
-		if err := LockFileFD(fh); err != nil {
-			fh.Close()
-			fmt.Fprintf(os.Stderr, "%s lock: cannot freeze %q: %v\n", progName(), f, err)
-			return ExitWriteIO
-		}
-		// Hash the now-frozen fd. Seek to 0 in case the open positioned us at EOF.
-		if _, err := fh.Seek(0, io.SeekStart); err != nil {
-			fh.Close()
-			fmt.Fprintf(os.Stderr, "%s lock: cannot rewind %q: %v\n", progName(), f, err)
-			return ExitWriteIO
-		}
-		hash, err := hashReader(relPath, fh)
-		if err != nil {
-			fh.Close()
-			fmt.Fprintf(os.Stderr, "%s lock: cannot read %q: %v\n", progName(), f, err)
-			return ExitWriteIO
-		}
-		// Set the filesystem immutable flag so the inode can't be replaced by
-		// rename (the gap chmod 0444 alone leaves open). An unsupported
-		// filesystem degrades to detection-only rather than failing the lock.
-		immutable, err := applyImmutable(fh)
-		if err != nil {
-			fh.Close()
-			fmt.Fprintf(os.Stderr, "%s lock: cannot set immutable flag on %q: %v\n", progName(), f, err)
-			return ExitWriteIO
-		}
-		pending = append(pending, locked{relPath: relPath, hash: hash, f: fh, immutable: immutable})
-	}
-
-	// All files are now frozen 0444. Build the manifest in memory and emit drift
-	// / idempotency notices, then publish ONCE at the end.
-	for _, p := range pending {
-		if i := m.Find(p.relPath); i >= 0 {
-			if m.Entries[i].Hash == p.hash {
-				fmt.Printf("note: %s already locked, unchanged\n", p.relPath)
-			} else {
-				fmt.Printf("note: %s already locked; updating recorded hash to match current content\n", p.relPath)
-			}
-		}
-		m.Upsert(p.relPath, p.hash)
-	}
-
-	// SINGLE manifest publish at the very end (Vector E): temp → root:0/444 →
-	// Renameat within the verified repo-root dir-fd. The live manifest stays 444
-	// throughout and is only written once every listed file is already frozen.
-	if err := WriteManifestLocked(m); err != nil {
-		fmt.Fprintf(os.Stderr, "%s lock: cannot write manifest: %v\n", progName(), err)
-		return ExitWriteIO
-	}
-
-	for _, p := range pending {
-		if p.immutable {
-			fmt.Printf("locked %s\n", p.relPath)
-		} else {
-			fmt.Printf("locked %s  (warning: this filesystem does not support the immutable flag; tamper is detected by `verify` but not prevented)\n", p.relPath)
-		}
-	}
-	return ExitWriteOK
+	batchFailures := lockBatch(m, args, defaultLockOps())
+	failures = append(failures, batchFailures...)
+	return lockFailureCode(failures)
 }
 
 // runUnlock implements `unlock [<file>...]`: unlock + restore the files, remove
@@ -829,6 +726,8 @@ COMMANDS:
                        Outside a project (no .git, no manifest above), the
                        working directory becomes the root and the manifest is
                        created there — no bootstrap step needed.
+                       Continues after per-file errors, records successes, and
+                       lists failed paths on stderr with a nonzero exit status.
     unlock [<path>...] Remove file(s) from the manifest and restore writable
                        ownership/permissions. Requires sudo. A directory path
                        unlocks the locked files beneath it. With no paths,

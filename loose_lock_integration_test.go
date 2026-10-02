@@ -1,10 +1,82 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestLockLooseDir_SymlinkParentDoesNotDiscardSuccesses(t *testing.T) {
+	requireRoot(t)
+	root := t.TempDir()
+	writeFile(t, root, "a.txt", "a")
+	writeFile(t, root, "c.txt", "c")
+	writeFile(t, root, "real/b.txt", "b")
+	if err := os.Symlink("real", filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	t.Cleanup(func() { _ = runUnlock([]string{"--uid=0", "a.txt", "c.txt"}) })
+	if code := runLock([]string{"a.txt", "linked/b.txt", "c.txt"}); code != ExitWriteArgs {
+		t.Fatalf("runLock = %d, want %d", code, ExitWriteArgs)
+	}
+	if got := verifiedOKPaths(t, root); !equalStrings(got, []string{"a.txt", "c.txt"}) {
+		t.Fatal(got)
+	}
+	if code := runUnlock([]string{"--uid=0", "a.txt", "c.txt"}); code != ExitWriteOK {
+		t.Fatal(code)
+	}
+}
+
+func TestLockBatchPrivilegedRollback(t *testing.T) {
+	requireRoot(t)
+	for _, stage := range []string{"hash", "publish"} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			path := writeFile(t, root, "a.txt", "a")
+			f, err := os.OpenFile(path, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// An ordinary owner's executable mode must survive the rollback.
+			if err := f.Chown(1234, 1234); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Chmod(0o751); err != nil {
+				t.Fatal(err)
+			}
+			before, err := captureLockState(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = restoreLockState(f, before); _ = f.Close() })
+			ops := defaultLockOps()
+			injected := errors.New("injected " + stage + " failure")
+			if stage == "hash" {
+				ops.hash = func(string, io.Reader) (string, error) { return "", injected }
+			} else {
+				ops.publish = func(*Manifest) error { return injected }
+			}
+			m := &Manifest{Root: root, Path: LockfilePath(root)}
+			failures := lockBatch(m, []string{path}, ops)
+			if lockFailureCode(failures) != ExitWriteIO {
+				t.Fatal(failures)
+			}
+			after, err := captureLockState(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after != before {
+				t.Fatalf("state = %+v, want %+v", after, before)
+			}
+			if _, err := os.Stat(m.Path); !os.IsNotExist(err) {
+				t.Fatalf("manifest should be absent: %v", err)
+			}
+		})
+	}
+}
 
 // loose_lock_integration_test.go — root-gated end-to-end coverage for locking
 // OUTSIDE a project (no .git, no manifest above). These drive the real
@@ -22,33 +94,23 @@ func fileIsFrozen(t *testing.T, path string) bool {
 	return info.Mode().Perm()&0o200 == 0
 }
 
-// A rejected path must freeze NOTHING. The freeze loop turns files immutable one
-// at a time and publishes the manifest only at the end, so a path rejected
-// mid-loop would leave earlier files frozen with no manifest recording them —
-// and unlock resolves its root FROM the manifest, so in a loose directory those
-// files could only be freed by hand as root. Paths are validated up front to
-// keep that state unreachable.
-func TestLockLooseDir_RejectedPathFreezesNothing(t *testing.T) {
+// An invalid path is reported while valid files are published and recoverable.
+func TestLockLooseDir_RejectedPathKeepsSuccessfulLocks(t *testing.T) {
 	requireRoot(t)
 	looseDir := t.TempDir()
-	writeFile(t, looseDir, "a.txt", "keep me writable\n")
+	writeFile(t, looseDir, "a.txt", "lock me\n")
 	outsideDir := t.TempDir()
 	writeFile(t, outsideDir, "b.txt", "outside the root\n")
 	chdirTo(t, looseDir)
-
-	escaping := filepath.Join(outsideDir, "b.txt")
-	code := runLock([]string{"a.txt", escaping})
-	if code != ExitWriteArgs {
-		// Undo a partial freeze so TempDir cleanup can remove the files.
-		t.Cleanup(func() { _ = runUnlock([]string{"a.txt"}) })
-		t.Fatalf("runLock with an escaping path = %d, want %d", code, ExitWriteArgs)
+	t.Cleanup(func() { _ = runUnlock([]string{"--uid=0", "a.txt"}) })
+	if code := runLock([]string{"a.txt", filepath.Join(outsideDir, "b.txt")}); code != ExitWriteArgs {
+		t.Fatalf("runLock = %d, want %d", code, ExitWriteArgs)
 	}
-
-	if fileIsFrozen(t, filepath.Join(looseDir, "a.txt")) {
-		t.Errorf("a.txt was frozen before the escaping path was rejected; it would be unrecoverable (no manifest for unlock to anchor on)")
+	if got := verifiedOKPaths(t, looseDir); !equalStrings(got, []string{"a.txt"}) {
+		t.Fatalf("verified %v, want [a.txt]", got)
 	}
-	if _, err := os.Stat(LockfilePath(looseDir)); !os.IsNotExist(err) {
-		t.Errorf("manifest exists after a rejected run (err=%v), want none", err)
+	if fileIsFrozen(t, filepath.Join(outsideDir, "b.txt")) {
+		t.Fatal("outside file was frozen")
 	}
 }
 

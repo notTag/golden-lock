@@ -61,7 +61,7 @@ func TestExpandLockTargetsSkipsSymlinks(t *testing.T) {
 	}
 
 	got, err := expandLockTargets(root, []string{filepath.Join(root, "core")})
-	if err != nil {
+	if len(err) != 1 || err[0].err != ErrSymlink {
 		t.Fatalf("expandLockTargets: %v", err)
 	}
 
@@ -73,7 +73,7 @@ func TestExpandLockTargetsSkipsSymlinks(t *testing.T) {
 
 	// A symlink passed directly as an input is also skipped, not followed.
 	fromLink, err := expandLockTargets(root, []string{filepath.Join(root, "core", "link.go")})
-	if err != nil {
+	if len(err) != 1 || err[0].err != ErrSymlink {
 		t.Fatalf("expandLockTargets(link): %v", err)
 	}
 	if len(fromLink) != 0 {

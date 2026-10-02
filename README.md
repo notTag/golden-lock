@@ -77,6 +77,8 @@ Once locked, a non-root process cannot alter the file or the manifest by any pat
 
 ## Exit codes
 
+`lock` continues after individual path or file errors and records every successful lock. It lists failed paths and reasons on stderr and returns a nonzero status even when some files were locked: `5` for invalid paths or symlinks, or `6` if any I/O operation failed. Symlinks found in directory sweeps are also reported as failures. Files that fail after modification are restored to their previous ownership, permissions, and immutable state. If the manifest cannot be published, the successful file changes are rolled back too; any rollback failure is reported for manual recovery. If publication succeeds but protecting the manifest fails, the recorded files stay locked and the command reports the protection error.
+
 CI distinguishes tampering from misconfiguration by exit code.
 
 **`verify`**

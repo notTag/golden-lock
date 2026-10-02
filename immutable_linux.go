@@ -18,6 +18,11 @@ import "golang.org/x/sys/unix"
 // from the canonical kernel value.
 const fsImmutableFlag = 0x00000010
 
+func immutableFD(fd int) (bool, error) {
+	flags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
+	return flags&fsImmutableFlag != 0, err
+}
+
 func setImmutableFD(fd int) error {
 	currentFlags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
 	if err != nil {

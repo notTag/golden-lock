@@ -71,8 +71,8 @@ func TestLockDot_SelectionContract(t *testing.T) {
 
 	t.Chdir(root) // so "." lstats as the repo root
 	got, err := expandLockTargets(root, []string{"."})
-	if err != nil {
-		t.Fatalf("expandLockTargets(.): %v", err)
+	if len(err) != 1 || err[0].err != ErrSymlink {
+		t.Fatalf("expected one reported symlink, got %v", err)
 	}
 
 	// Exact contract: nested source + top-level file + the gitignored trees,

@@ -16,6 +16,14 @@ package main
 
 import "golang.org/x/sys/unix"
 
+func immutableFD(fd int) (bool, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return false, err
+	}
+	return st.Flags&unix.SF_IMMUTABLE != 0, nil
+}
+
 func setImmutableFD(fd int) error {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
