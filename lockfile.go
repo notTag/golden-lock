@@ -48,6 +48,10 @@ const LockfileRelPath = GoldenLockDir + "/" + LockfileName
 // callers can refuse to overwrite a present-but-corrupt trust anchor.
 var ErrManifestMalformed = errors.New("manifest malformed")
 
+// ErrManifestPublished means the atomic rename succeeded, but protecting the
+// new manifest failed. Its entries are live, so callers must not thaw the files.
+var ErrManifestPublished = errors.New("manifest published but protection failed")
+
 // Entry is a single manifest record: a stored hash bound to a repo-root-relative path.
 type Entry struct {
 	Hash string // lowercase hex SHA-256 as recorded in the manifest
@@ -453,16 +457,36 @@ func writeManifestFile(m *Manifest, lockResult bool) error {
 		return err
 	}
 
-	// An immutable live manifest cannot be replaced by rename, so clear its flag
-	// first (privileged path only). A first-ever lock (no live manifest) or an
-	// unsupported filesystem is a no-op.
+	// Retain the old inode and its flag so a failed rename can restore the
+	// existing trust anchor's protection as well as the caller's file locks.
+	var previous *os.File
+	var previousImmutable bool
 	if lockResult {
-		clearLiveManifestImmutable(dirFD)
+		fd, err := sysOpenat(int(dirFD.Fd()), LockfileName,
+			syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if err != nil && !errors.Is(err, syscall.ENOENT) {
+			return err
+		}
+		if err == nil {
+			previous = os.NewFile(uintptr(fd), LockfileName)
+			defer previous.Close()
+			previousImmutable, err = immutableFD(fd)
+			if err != nil && !immutableUnsupported(err) {
+				return err
+			}
+			if err := clearImmutable(previous); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Renameat within the same dir-fd: no path string is re-resolved, so a
 	// parent-directory symlink swap between create and rename has no effect.
 	if err := sysRenameat(int(dirFD.Fd()), tmpBase, int(dirFD.Fd()), LockfileName); err != nil {
+		if previousImmutable {
+			_, restoreErr := applyImmutable(previous)
+			return errors.Join(err, restoreErr)
+		}
 		return err
 	}
 	cleanup = false
@@ -473,7 +497,7 @@ func writeManifestFile(m *Manifest, lockResult bool) error {
 	// the manifest is root-owned throughout.
 	if lockResult {
 		if err := setLiveManifestImmutable(dirFD); err != nil {
-			return err
+			return errors.Join(ErrManifestPublished, err)
 		}
 	}
 	return nil

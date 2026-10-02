@@ -27,7 +27,7 @@ golden-lock <command> [arguments]
 
 | Command | Effect | Privilege |
 |---|---|---|
-| `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
+| `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Outside a project (no `.git` and no manifest above), the working directory becomes the root and the manifest is created there. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
 | `unlock <file>...` | Remove file(s) from the manifest and restore writable ownership/permissions. The sanctioned change path. | **sudo** |
 | `verify` | Recompute the SHA-256 of every manifest entry and compare. Safe for CI. | none |
 | `list` | Print the path of every file recorded in the manifest. Hashes nothing — use `verify` for that. | none |
@@ -48,7 +48,7 @@ The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implemen
 | `rehash <file>` | ☐ TODO | Recompute stored hash after a blessed edit. |
 | `status` | ☐ TODO | Per-file hash ✅/❌ and lock state; `--json`. |
 | `list` | ☐ TODO | Print tracked paths; `--json`. |
-| `init` | ☐ TODO | Create an empty manifest under `golden-lock/`. |
+| `init` | ✖ Dropped | Unnecessary: `lock` creates the manifest in the working directory when there is no project root. |
 | `install-hooks` | ☐ TODO | Append-safe `post-checkout` / `post-merge` → `apply`. |
 | `version` | ✅ Implemented | Print version + build info; also `--version` / `-v`. |
 
@@ -76,6 +76,8 @@ sudo golden-lock lock config/production.yaml
 Once locked, a non-root process cannot alter the file or the manifest by any path — neither an in-place write (`EACCES` from `444`) nor a replace-by-rename (`EPERM` from the immutable flag). Agent auto-modes don't bypass kernel access control or filesystem immutability regardless of autonomy settings.
 
 ## Exit codes
+
+`lock` continues after individual path or file errors and records every successful lock. It lists failed paths and reasons on stderr and returns a nonzero status even when some files were locked: `5` for invalid paths or symlinks, or `6` if any I/O operation failed. Symlinks found in directory sweeps are also reported as failures. Files that fail after modification are restored to their previous ownership, permissions, and immutable state. If the manifest cannot be published, the successful file changes are rolled back too; any rollback failure is reported for manual recovery. If publication succeeds but protecting the manifest fails, the recorded files stay locked and the command reports the protection error.
 
 CI distinguishes tampering from misconfiguration by exit code.
 
@@ -111,7 +113,7 @@ Plain text, checked into the repo, one entry per line. Hash-first to mirror `sha
 
 The `<sha256>` hashes the path **and** the content, not the content alone: `SHA-256( uvarint(len(path)) || path || content )`. This means the path is checked, not just recorded. A locked line can't be moved to point at a different file, and two locked files with identical content can't be swapped, without `verify` catching it.
 
-Paths are repo-root-relative and forward-slash, normalized on `lock`. The repo root is discovered via `git rev-parse --show-toplevel`, falling back to walking upward for a `.git` directory or an existing `golden-lock/golden.lock`, so commands work from any subdirectory. Path resolution is symlink-free from the filesystem root, so a symlinked ancestor can't redirect a locked path.
+Paths are repo-root-relative and forward-slash, normalized on `lock`. The root is discovered by walking upward for a `.git` directory or an existing `golden-lock/golden.lock`, so commands work from any subdirectory. Unprivileged commands (`verify`, `list`) consult `git rev-parse --show-toplevel` first to honor exotic git layouts; `lock` and `unlock` run as root and skip that probe, since exec'ing a git resolved from an attacker-influenced `PATH` under privilege is itself a risk. When no marker exists anywhere above, the state-creating commands (`lock`, `setup`) treat the working directory as the root and create `golden-lock/` there; the read commands and `unlock` still require a real root. Path resolution is symlink-free from the filesystem root, so a symlinked ancestor can't redirect a locked path.
 
 > Pin golden paths in `.gitattributes` (e.g. `path -text`, or repo-wide `* text=auto eol=lf`) so `autocrlf` can't rewrite bytes on checkout and produce a spurious hash mismatch.
 

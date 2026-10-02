@@ -59,7 +59,7 @@ func TestLockDir_LocksTreeSkippingDotAndSymlink(t *testing.T) {
 	}
 	chdirTo(t, root)
 
-	if code := runLock([]string{"testdata"}); code != ExitWriteOK {
+	if code := runLock([]string{"testdata"}); code != ExitWriteArgs {
 		t.Fatalf("runLock(testdata) = %d, want %d", code, ExitWriteOK)
 	}
 	t.Cleanup(func() { _ = runUnlock([]string{"testdata"}) }) // clear immutable before TempDir cleanup
