@@ -743,6 +743,9 @@ EXIT CODES:
     verify:  0 ok | 1 hash mismatch | 2 missing file | 3 absent/malformed manifest
     list:    0 ok | 3 absent/malformed manifest
     lock/unlock:  0 ok | 4 not root | 5 arg error | 6 io failure
+    lock reports the WORST code of the batch: files it locked successfully stay
+    locked and recorded even when it exits 5 or 6, so a non-zero lock does NOT
+    mean nothing changed. Read the per-file output, or run list / verify.
 `, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir), filepath.Join(GoldenLockDir, ProposalLocksDir), LockfileRelPath)
 }
 
