@@ -65,6 +65,9 @@ func TestLockLooseDir_CreatesManifestAndRoundTrips(t *testing.T) {
 	if code := runLock([]string{"notes.txt"}); code != ExitWriteOK {
 		t.Fatalf("runLock in a loose dir = %d, want %d", code, ExitWriteOK)
 	}
+	// Safety net for a mid-test failure: an immutable file would block TempDir
+	// cleanup. The happy path unlocks explicitly below, after which this call
+	// logs "cannot find repo root" (the manifest is gone) and is ignored.
 	t.Cleanup(func() { _ = runUnlock([]string{"notes.txt"}) })
 
 	if _, err := os.Stat(LockfilePath(looseDir)); err != nil {
