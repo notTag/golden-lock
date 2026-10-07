@@ -41,7 +41,14 @@ func captureLockState(f *os.File) (fileLockState, error) {
 	if err != nil {
 		return fileLockState{}, err
 	}
-	st := info.Sys().(*syscall.Stat_t)
+	// Comma-ok, not a bare assertion: a panic here would unwind past the caller's
+	// rollback, leaving a file frozen with nothing recorded in the manifest — the
+	// one state lock must never reach, since unlock resolves its root FROM the
+	// manifest. Matches the comma-ok form ReadManifest uses on the same call.
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileLockState{}, fmt.Errorf("cannot read ownership of %s: unexpected stat type %T", f.Name(), info.Sys())
+	}
 	immutable, err := immutableFD(int(f.Fd()))
 	if err != nil && !immutableUnsupported(err) {
 		return fileLockState{}, err

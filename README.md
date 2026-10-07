@@ -99,6 +99,8 @@ CI distinguishes tampering from misconfiguration by exit code.
 | `5` | argument error |
 | `6` | I/O / chown / chmod failure |
 
+`lock` is a batch, not a transaction: a bad path or a failed freeze does not discard the files that succeeded. Every file it locked stays locked **and recorded in the manifest**, each failed file is rolled back to its original ownership and permissions, and the exit code is the worst of the batch. So a non-zero `lock` does **not** mean nothing changed — read the per-file output, or run `list` / `verify` afterward. The exception is manifest publication: if that fails, the whole batch is rolled back, since nothing can be recorded.
+
 ## The `golden.lock` manifest
 
 The manifest lives at `golden-lock/golden.lock`. The `golden-lock/` directory
