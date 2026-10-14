@@ -23,11 +23,18 @@ Single static binary, Go 1.26. Only dependency is `golang.org/x/sys` (ownership/
 
 ```
 golden-lock <command> [arguments]
+golden-lock <path>...              # shorthand for `lock <path>...`
 ```
+
+A first argument that resolves to an existing path is treated as `lock`, so
+`golden-lock src/auth/tenant_isolation_test.go` needs no verb. Only locking is
+inferred this way — `unlock` always stays an explicit verb, because inferring
+the direction that *weakens* the guarantee from the current state is exactly
+how a locked file gets opened by accident.
 
 | Command | Effect | Privilege |
 |---|---|---|
-| `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Outside a project (no `.git` and no manifest above), the working directory becomes the root and the manifest is created there. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
+| `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. The verb is optional when the first argument is an existing path (`golden-lock <file>...`). With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Outside a project (no `.git` and no manifest above), the working directory becomes the root and the manifest is created there. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
 | `unlock <file>...` | Remove file(s) from the manifest and restore writable ownership/permissions. The sanctioned change path. | **sudo** |
 | `verify` | Recompute the SHA-256 of every manifest entry and compare. Safe for CI. | none |
 | `list` | Print the path of every file recorded in the manifest. Hashes nothing — use `verify` for that. | none |
