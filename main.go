@@ -707,10 +707,12 @@ func runList(args []string) int {
 // unknown subcommand.
 func usage() {
 	p := progName()
+	proposalLocksDir := filepath.Join(GoldenLockDir, ProposalLocksDir)
 	fmt.Fprintf(os.Stderr, `%s — make chosen files immutable so they can't be silently changed
 
 USAGE:
     %s <command> [arguments]
+    %s <path>...                 shorthand for 'lock <path>...'
 
 COMMANDS:
     setup              Scaffold %s/ for the proposal-locks workflow and
@@ -728,6 +730,9 @@ COMMANDS:
                        created there — no bootstrap step needed.
                        Continues after per-file errors, records successes, and
                        lists failed paths on stderr with a nonzero exit status.
+                       A first argument that is an existing path runs lock, so
+                       '%s src/auth_test.go' needs no verb. Unlock is never
+                       inferred this way — it stays an explicit verb.
     unlock [<path>...] Remove file(s) from the manifest and restore writable
                        ownership/permissions. Requires sudo. A directory path
                        unlocks the locked files beneath it. With no paths,
@@ -746,7 +751,7 @@ EXIT CODES:
     lock reports the WORST code of the batch: files it locked successfully stay
     locked and recorded even when it exits 5 or 6, so a non-zero lock does NOT
     mean nothing changed. Read the per-file output, or run list / verify.
-`, p, p, GoldenLockDir, LockfileRelPath, filepath.Join(GoldenLockDir, ProposalLocksDir), filepath.Join(GoldenLockDir, ProposalLocksDir), LockfileRelPath)
+`, p, p, p, GoldenLockDir, LockfileRelPath, proposalLocksDir, p, proposalLocksDir, LockfileRelPath)
 }
 
 // dispatch routes argv (excluding the program name) to the matching run* func
@@ -773,6 +778,14 @@ func dispatch(args []string) int {
 		usage()
 		return ExitWriteOK
 	default:
+		// A bare existing path is shorthand for `lock <path>...`. Locking is the
+		// only direction inferred this way: unlock weakens the guarantee the tool
+		// exists to provide, so it always stays an explicit verb. The stat guard
+		// keeps a mistyped verb (`verfiy`) an unknown command instead of a lock
+		// attempt on a nonexistent file; a leading `-` also fails it.
+		if _, err := os.Stat(args[0]); err == nil {
+			return runLock(args)
+		}
 		fmt.Fprintf(os.Stderr, "%s: unknown command %q\n\n", progName(), args[0])
 		usage()
 		return ExitWriteArgs

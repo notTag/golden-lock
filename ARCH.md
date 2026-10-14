@@ -314,7 +314,12 @@ require none — CI runs `verify` with no sudo. `SudoUID` reads `SUDO_UID`/
 `SUDO_GID` (fallback to real uid/gid) for unlock ownership restore.
 
 **Dispatch.** `dispatch(args)` matches `args[0]` to `lock`/`unlock`/`verify`;
-`--help`/`-h`/empty/unknown → `usage()`. Alias `gl` vs `golden-lock` affects only
-help text (`progName()` from argv[0] basename), not routing.
+`--help`/`-h`/empty/unknown → `usage()`. An unmatched `args[0]` that `os.Stat`s
+as an existing path falls through to `runLock(args)`, so `golden-lock <path>...`
+is shorthand for `lock <path>...`. Only lock is inferred: unlock weakens the
+guarantee, so it stays an explicit verb, and the stat guard keeps a mistyped
+verb an unknown command rather than a lock of a nonexistent file. Alias `gl` vs
+`golden-lock` affects only help text (`progName()` from argv[0] basename), not
+routing.
 
 **Build gate.** `go build ./...` and `go vet ./...` pass on stubs (verified).
