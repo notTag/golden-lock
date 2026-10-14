@@ -1,6 +1,6 @@
 # Makefile — build golden-lock and install it for local use.
 #
-# `make build`     compile the binary into the repo root.
+# `make build`     compile the binary into bin/, version-stamped from git describe.
 # `make install`   build, then symlink the binary onto PATH and this repo's
 #                  Claude skills into ~/.claude/skills/. Re-runnable.
 # `make uninstall` remove the symlinks install created (leaves the binary).
@@ -14,11 +14,17 @@ SKILLS_DIR ?= $(HOME)/.claude/skills
 # data directory, which would make `go build -o golden-lock` drop the binary
 # inside that dir. bin/golden-lock is already covered by .gitignore.
 BINARY     := bin/golden-lock
+# Stamped into main.version so `golden-lock version` identifies the build
+# without anyone having to diff trees. An exact tag gives v1.2.3, a commit past
+# one gives v1.2.3-4-gabc1234, and a repo with no tags keeps the "dev" default
+# rather than repeating the revision the version line already prints.
+VERSION    ?= $(shell git describe --tags 2>/dev/null || echo dev)
+LDFLAGS    := -X main.version=$(VERSION)
 
 .PHONY: build install uninstall
 
 build:
-	go build -o $(BINARY) .
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
 install: build
 	mkdir -p $(BINDIR)

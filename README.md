@@ -12,10 +12,21 @@ The detection guarantee is the **manifest as trust anchor**: `golden.lock` itsel
 ## Install
 
 ```sh
-go build -o golden-lock .
-# move onto PATH, e.g.
-sudo mv golden-lock /usr/local/bin/
+make build                              # -> bin/golden-lock, version-stamped
+sudo install bin/golden-lock /usr/local/bin/
 ```
+
+Or symlink it onto PATH instead, which also installs this repo's Claude skills
+and leaves the binary where a later `make build` refreshes it:
+
+```sh
+sudo make install                       # BINDIR=~/bin for a user-writable dir
+```
+
+Build straight to `bin/` rather than `go build -o golden-lock .`: in a repo that
+already has locks, the bare name collides with the `golden-lock/` data directory
+and the binary lands *inside* it. A plain `go build` also leaves the version as
+`dev`; `make build` stamps it from `git describe`.
 
 Single static binary, Go 1.26. Only dependency is `golang.org/x/sys` (ownership/permission/immutable-flag syscalls). Linux, macOS, and WSL2. Windows native is out of scope (different ownership model).
 
@@ -37,24 +48,25 @@ how a locked file gets opened by accident.
 | `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. The verb is optional when the first argument is an existing path (`golden-lock <file>...`). With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Outside a project (no `.git` and no manifest above), the working directory becomes the root and the manifest is created there. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
 | `unlock <file>...` | Remove file(s) from the manifest and restore writable ownership/permissions. The sanctioned change path. | **sudo** |
 | `verify` | Recompute the SHA-256 of every manifest entry and compare. Safe for CI. | none |
+| `setup` | Scaffold `golden-lock/` for the proposal-locks workflow and write a getting-started guide. Outside a project it scaffolds in the working directory. | none |
 | `list` | Print the path of every file recorded in the manifest. Hashes nothing — use `verify` for that. | none |
 
 ### Command status
 
-The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implementation ships the core three; the rest are planned.
+The PRD ([PRD.md](PRD.md)) specifies a broader command surface. Current implementation ships the commands marked below; the rest are planned.
 
 | Command | Status | Notes |
 |---|---|---|
 | `lock [<file>...]` | ✅ Implemented | Hash, record, root-own `444` files + manifest. No-arg form locks every path listed under `golden-lock/proposal-locks/`. |
 | `unlock <file>...` | ✅ Implemented | Removes entries + restores writable perms. Covers the PRD's `remove`. |
 | `verify` | ✅ Implemented | CI gate. |
-| `list` | ✅ Implemented | Manifest paths only; no hashing, no lock-state check. |
+| `setup` | ✅ Implemented | Scaffolds `golden-lock/` + a getting-started guide. Needs no privilege. |
+| `list` | ✅ Implemented | Manifest paths only; no hashing, no lock-state check. `--json` still TODO. |
 | `add <file>` | ☐ TODO | Single-file `lock` that errors if already listed (`lock` skips). |
 | `remove <file>` | ☐ TODO | Formal single-file unlock (subsumed by `unlock` today). |
 | `apply` | ☐ TODO | Re-assert root-`444` on all listed files; git-hook / bootstrap verb. |
 | `rehash <file>` | ☐ TODO | Recompute stored hash after a blessed edit. |
 | `status` | ☐ TODO | Per-file hash ✅/❌ and lock state; `--json`. |
-| `list` | ☐ TODO | Print tracked paths; `--json`. |
 | `init` | ✖ Dropped | Unnecessary: `lock` creates the manifest in the working directory when there is no project root. |
 | `install-hooks` | ☐ TODO | Append-safe `post-checkout` / `post-merge` → `apply`. |
 | `version` | ✅ Implemented | Print version + build info; also `--version` / `-v`. |
