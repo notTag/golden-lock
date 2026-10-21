@@ -35,7 +35,11 @@ func runSetup(args []string) int {
 	// outside a project the working directory becomes the root. Without it the
 	// no-arg proposal-locks flow would be unreachable there — setup could not make
 	// the directory, and `lock` with no paths would find nothing listed.
-	root, looseDir := rootForNewManifest(cwd)
+	root, looseDir, err := rootForNewManifest(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s setup: %v\n", progName(), err)
+		return ExitWriteArgs
+	}
 	if looseDir {
 		fmt.Fprintf(os.Stderr, "note: %s is not in a project (no .git, no existing manifest); scaffolding in this directory\n", cwd)
 	}

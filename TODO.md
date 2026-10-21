@@ -4,7 +4,6 @@
 - [ ] [P2] Lock the first golden test(s): run the `/golden-test` skill to scan the repo, extract core tests to `*.golden.*` siblings, and lock them with `sudo golden-lock lock` (creates `golden.lock`).
 - [ ] [P2] After first lock, make the `golden-verify` GitHub check a **required status check** via branch protection / ruleset on `main` (blocks tamper merges; doable with `gh api`). Depends on the lock above.
 - [ ] [P4] Decide repo visibility — `notTag/golden-test` is currently **private**; flip to public with `gh repo edit notTag/golden-test --visibility public` if desired.
-- [ ] [P4] Future enhancement: add an explicit `--lockfile` global flag to sidestep `FindRepoRoot` path-based root selection (documented residual in `ARCH.md`).
 - [ ] [P3] Add golden-lock version command/flag (`golden-lock version` / `--version`) (#31)
 - [ ] [P3] Add golden-lock help command/flag (`golden-lock help` / `--help`) (#32)
 - [ ] [P3] `golden-lock unlock` without any params should unlock all files listed under the proposal-lock dir — essentially the opposite of what `golden-lock lock` does. (#34)

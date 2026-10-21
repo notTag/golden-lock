@@ -12,7 +12,10 @@ import (
 func TestRootForNewManifest_LooseDirFallsBackToCwd(t *testing.T) {
 	dir := t.TempDir()
 
-	root, looseDir := rootForNewManifest(dir)
+	root, looseDir, err := rootForNewManifest(dir)
+	if err != nil {
+		t.Fatalf("rootForNewManifest: %v", err)
+	}
 	if !looseDir {
 		t.Errorf("looseDir = false for %q, want true (no .git, no manifest)", dir)
 	}
@@ -30,7 +33,10 @@ func TestRootForNewManifest_RepoRootWinsFromSubdir(t *testing.T) {
 		t.Fatalf("mkdir sub: %v", err)
 	}
 
-	root, looseDir := rootForNewManifest(sub)
+	root, looseDir, err := rootForNewManifest(sub)
+	if err != nil {
+		t.Fatalf("rootForNewManifest: %v", err)
+	}
 	if looseDir {
 		t.Errorf("looseDir = true inside a repo at %q, want false", repoRoot)
 	}
@@ -74,7 +80,10 @@ func TestRootForNewManifest_EarlierManifestAnchorsLaterLocks(t *testing.T) {
 		t.Fatalf("mkdir sub: %v", err)
 	}
 
-	root, looseDir := rootForNewManifest(sub)
+	root, looseDir, err := rootForNewManifest(sub)
+	if err != nil {
+		t.Fatalf("rootForNewManifest: %v", err)
+	}
 	if looseDir {
 		t.Errorf("looseDir = true with a manifest at %q, want false", dir)
 	}

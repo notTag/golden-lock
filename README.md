@@ -33,9 +33,17 @@ Single static binary, Go 1.26. Only dependency is `golang.org/x/sys` (ownership/
 ## Usage
 
 ```
-golden-lock <command> [arguments]
+golden-lock [--lockfile <path>] <command> [arguments]
 golden-lock <path>...              # shorthand for `lock <path>...`
 ```
+
+`--lockfile <path>` (or `--lockfile=<path>`) names the manifest explicitly
+instead of discovering the repo root from the working directory. It must point
+at `<dir>/golden-lock/golden.lock`, and `<dir>` becomes the root. It works with
+every command, before or after the verb (`golden-lock --lockfile p verify` and
+`golden-lock verify --lockfile p` are the same); a bare `--` ends flag scanning.
+Use it whenever the working directory can't be trusted to lead to the right
+root — see [the manifest](#the-goldenlock-manifest).
 
 A first argument that resolves to an existing path is treated as `lock`, so
 `golden-lock src/auth/tenant_isolation_test.go` needs no verb. Only locking is
@@ -136,6 +144,8 @@ The `<sha256>` hashes the path **and** the content, not the content alone: `SHA-
 
 Paths are repo-root-relative and forward-slash, normalized on `lock`. The root is discovered by walking upward for a `.git` directory or an existing `golden-lock/golden.lock`, so commands work from any subdirectory. Unprivileged commands (`verify`, `list`) consult `git rev-parse --show-toplevel` first to honor exotic git layouts; `lock` and `unlock` run as root and skip that probe, since exec'ing a git resolved from an attacker-influenced `PATH` under privilege is itself a risk. When no marker exists anywhere above, the state-creating commands (`lock`, `setup`) treat the working directory as the root and create `golden-lock/` there; the read commands and `unlock` still require a real root. Path resolution is symlink-free from the filesystem root, so a symlinked ancestor can't redirect a locked path.
 
+Discovery trusts whatever marker it finds first, so a process that can plant a `.git` or a `golden-lock/golden.lock` between the working directory and the real root can change which root is chosen. `--lockfile <root>/golden-lock/golden.lock` skips discovery entirely — no marker walk, no git probe, no working-directory fallback — so pin it wherever that matters (CI, hooks, scripts run from an arbitrary directory).
+
 > Pin golden paths in `.gitattributes` (e.g. `path -text`, or repo-wide `* text=auto eol=lf`) so `autocrlf` can't rewrite bytes on checkout and produce a spurious hash mismatch.
 
 ## Threat model
@@ -165,8 +175,11 @@ The local prevention layer does **not** travel with the repo. Be precise about w
 ```yaml
 # GitHub Actions
 - name: Verify locked files
-  run: golden-lock verify
+  run: golden-lock --lockfile golden-lock/golden.lock verify
 ```
+
+The `--lockfile` pin makes the gate check the checkout's own manifest even if a
+planted `.git` or manifest marker would otherwise steer root discovery.
 
 ## Agent integration
 

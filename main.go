@@ -308,15 +308,107 @@ func isRepoRoot(root, input string) bool {
 // Only the creating commands fall back. verify, list and unlock still require a
 // real root: without a manifest there is nothing for them to act on.
 //
+// An explicit --lockfile names the root outright, so neither discovery nor the
+// fallback runs; the only possible error is a malformed --lockfile.
+//
 // ponytail: the marker search only walks UP, so locking work/f2 from a directory
 // ABOVE an existing work/golden-lock/golden.lock creates a second, independent
 // manifest instead of joining the first, and neither one then covers both files.
 // Scan downward for an existing manifest if that collision shows up in practice.
-func rootForNewManifest(cwd string) (root string, looseDir bool) {
-	if repoRoot, err := FindRepoRoot(cwd); err == nil {
-		return repoRoot, false
+func rootForNewManifest(cwd string) (root string, looseDir bool, err error) {
+	if explicitLockfile != "" {
+		root, err = rootFromLockfile(explicitLockfile)
+		return root, false, err
 	}
-	return cwd, true
+	if repoRoot, err := FindRepoRoot(cwd); err == nil {
+		return repoRoot, false, nil
+	}
+	return cwd, true, nil
+}
+
+// findRoot resolves the root for the commands that act on an existing manifest
+// (unlock, verify, list): the explicit --lockfile root when given, otherwise
+// marker discovery upward from cwd.
+func findRoot(cwd string) (string, error) {
+	if explicitLockfile != "" {
+		return rootFromLockfile(explicitLockfile)
+	}
+	return FindRepoRoot(cwd)
+}
+
+// explicitLockfile is this invocation's --lockfile value, "" when absent. dispatch
+// sets it and clears it on return, so a flag never leaks into a later call.
+var explicitLockfile string
+
+// rootFromLockfile derives the repo root from an explicit --lockfile path,
+// sidestepping the path-marker discovery that an attacker who can plant a .git
+// or manifest could steer (the ARCH.md root-selection residual). The manifest
+// location is fixed at <root>/golden-lock/golden.lock, so the path must have that
+// shape and the root is the directory two levels above it. The manifest itself
+// need not exist yet: the first lock creates it.
+func rootFromLockfile(lockfilePath string) (string, error) {
+	absPath, err := filepath.Abs(lockfilePath)
+	if err != nil {
+		return "", err
+	}
+	manifestDir := filepath.Dir(absPath)
+	isLockfileName := filepath.Base(absPath) == LockfileName
+	isInGoldenLockDir := filepath.Base(manifestDir) == GoldenLockDir
+	if !isLockfileName || !isInGoldenLockDir {
+		return "", fmt.Errorf("--lockfile %q must point at <dir>/%s", lockfilePath, LockfileRelPath)
+	}
+	root := filepath.Dir(manifestDir)
+	info, err := os.Stat(root)
+	if err != nil {
+		return "", fmt.Errorf("--lockfile %q: root directory: %w", lockfilePath, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--lockfile %q: root %s is not a directory", lockfilePath, root)
+	}
+	return root, nil
+}
+
+// lockfileFlag is the global flag that names the manifest explicitly.
+const lockfileFlag = "--lockfile"
+
+// extractLockfileFlag removes `--lockfile <path>` / `--lockfile=<path>` from args
+// wherever it appears — before or after the subcommand — and returns the
+// remaining args with the path. Scanning stops at a bare "--", matching the flag
+// package, so a file literally named --lockfile can still be passed after it.
+// Giving the flag twice is an error rather than last-wins: two manifests named
+// in one command is a mistake, not a preference.
+func extractLockfileFlag(args []string) (remaining []string, lockfilePath string, err error) {
+	found := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			remaining = append(remaining, args[i:]...)
+			break
+		}
+		var value string
+		switch {
+		case arg == lockfileFlag:
+			if i+1 >= len(args) {
+				return nil, "", fmt.Errorf("%s needs a path", lockfileFlag)
+			}
+			i++
+			value = args[i]
+		case strings.HasPrefix(arg, lockfileFlag+"="):
+			value = strings.TrimPrefix(arg, lockfileFlag+"=")
+		default:
+			remaining = append(remaining, arg)
+			continue
+		}
+		if value == "" {
+			return nil, "", fmt.Errorf("%s needs a path", lockfileFlag)
+		}
+		if found {
+			return nil, "", fmt.Errorf("%s given more than once", lockfileFlag)
+		}
+		found = true
+		lockfilePath = value
+	}
+	return remaining, lockfilePath, nil
 }
 
 // lockSweepWarnThreshold is the file count above which a directory sweep (e.g.
@@ -379,7 +471,11 @@ func runLock(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s lock: cannot determine working directory: %v\n", progName(), err)
 		return ExitWriteIO
 	}
-	root, looseDir := rootForNewManifest(cwd)
+	root, looseDir, err := rootForNewManifest(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s lock: %v\n", progName(), err)
+		return ExitWriteArgs
+	}
 
 	// No explicit files → lock everything listed under golden-lock/proposal-locks/
 	// (each file there is a newline-separated list of repo paths). Missing listed
@@ -506,7 +602,7 @@ func runUnlock(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s unlock: cannot determine working directory: %v\n", progName(), err)
 		return ExitWriteIO
 	}
-	root, err := FindRepoRoot(cwd)
+	root, err := findRoot(cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s unlock: cannot find repo root: %v\n", progName(), err)
 		return ExitWriteArgs
@@ -626,7 +722,7 @@ func runVerify(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s verify: cannot determine working directory: %v\n", progName(), err)
 		return ExitVerifyLockfile
 	}
-	root, err := FindRepoRoot(cwd)
+	root, err := findRoot(cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s verify: cannot find repo root: %v\n", progName(), err)
 		return ExitVerifyLockfile
@@ -679,7 +775,7 @@ func runList(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s list: cannot determine working directory: %v\n", progName(), err)
 		return ExitVerifyLockfile
 	}
-	root, err := FindRepoRoot(cwd)
+	root, err := findRoot(cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s list: cannot find repo root: %v\n", progName(), err)
 		return ExitVerifyLockfile
@@ -711,8 +807,15 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `%s — make chosen files immutable so they can't be silently changed
 
 USAGE:
-    %s <command> [arguments]
+    %s [--lockfile <path>] <command> [arguments]
     %s <path>...                 shorthand for 'lock <path>...'
+
+GLOBAL FLAGS:
+    --lockfile <path>  Use this manifest instead of discovering the repo root
+                       from the working directory. Must point at
+                       <dir>/%s; <dir> becomes the root.
+                       Accepted before or after the command; '--' ends
+                       flag scanning.
 
 COMMANDS:
     setup              Scaffold %s/ for the proposal-locks workflow and
@@ -751,12 +854,20 @@ EXIT CODES:
     lock reports the WORST code of the batch: files it locked successfully stay
     locked and recorded even when it exits 5 or 6, so a non-zero lock does NOT
     mean nothing changed. Read the per-file output, or run list / verify.
-`, p, p, p, GoldenLockDir, LockfileRelPath, proposalLocksDir, p, proposalLocksDir, LockfileRelPath)
+`, p, p, p, LockfileRelPath, GoldenLockDir, LockfileRelPath, proposalLocksDir, p, proposalLocksDir, LockfileRelPath)
 }
 
 // dispatch routes argv (excluding the program name) to the matching run* func
 // and returns the process exit code. Exposed for testing.
 func dispatch(args []string) int {
+	args, lockfilePath, err := extractLockfileFlag(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", progName(), err)
+		return ExitWriteArgs
+	}
+	explicitLockfile = lockfilePath
+	defer func() { explicitLockfile = "" }()
+
 	if len(args) == 0 {
 		usage()
 		return ExitWriteArgs
