@@ -447,7 +447,21 @@ func confirmLargeSweep(w io.Writer, in io.Reader, dirs []string, fileCount int) 
 	return answer == "y" || answer == "yes"
 }
 
-// runLock implements `lock [-y] [<path>...]`: discover repo root, hash each file,
+// closedOptionsWithNoPaths reports whether args ended its options with `--` and
+// named nothing after it. flag drops the `--`, so without this check `lock --`
+// would look identical to a bare `lock` and sweep the proposal-locks list. A
+// caller that always emits `--` before user-chosen names (golden-lock-menu)
+// must get an error for an empty selection, not a mass lock or unlock. Only a
+// trailing `--` can leave nothing behind it, so the last arg is the whole test.
+func closedOptionsWithNoPaths(args, positional []string) bool {
+	if len(positional) > 0 || len(args) == 0 {
+		return false
+	}
+	lastArg := args[len(args)-1]
+	return lastArg == "--"
+}
+
+// runLock implements `lock [-y] [--] [<path>...]`: discover repo root, hash each file,
 // upsert manifest entries, persist the manifest, then lock the files + the
 // manifest. With no file arguments, the lock set is gathered from
 // golden-lock/proposal-locks/. Returns a write exit code.
@@ -457,6 +471,10 @@ func runLock(args []string) int {
 	skipSweepPrompt := fs.Bool("yes", false, "skip the confirmation prompt for a large directory sweep")
 	fs.BoolVar(skipSweepPrompt, "y", false, "shorthand for --yes")
 	if err := fs.Parse(args); err != nil {
+		return ExitWriteArgs
+	}
+	if closedOptionsWithNoPaths(args, fs.Args()) {
+		fmt.Fprintf(os.Stderr, "%s lock: '--' given with no paths after it; drop the '--' to lock the proposal-locks list\n", progName())
 		return ExitWriteArgs
 	}
 	args = fs.Args()
@@ -580,6 +598,10 @@ func runUnlock(args []string) int {
 		}
 	})
 	fileArgs := fs.Args()
+	if closedOptionsWithNoPaths(args, fileArgs) {
+		fmt.Fprintf(os.Stderr, "%s unlock: '--' given with no paths after it; drop the '--' to unlock the proposal-locks list\n", progName())
+		return ExitWriteArgs
+	}
 
 	if !IsRoot() {
 		fmt.Fprintf(os.Stderr, "%s unlock: must run as root (use sudo)\n", progName())
@@ -840,6 +862,12 @@ COMMANDS:
                        ownership/permissions. Requires sudo. A directory path
                        unlocks the locked files beneath it. With no paths,
                        unlocks every path listed under %s/.
+
+END OF OPTIONS:
+    lock and unlock treat everything after '--' as a path, so a file named
+    '-y' is locked by 'lock -- -y' rather than read as --yes. A '--' with no
+    paths after it is an arg error (exit 5), not the proposal-locks sweep —
+    scripts passing user-chosen names should always emit '--' first.
     verify             Recompute the SHA-256 of every manifest entry and compare.
                        Needs no privilege (safe for CI).
     list               Print the path of every file recorded in %s.
@@ -888,14 +916,21 @@ func dispatch(args []string) int {
 	case "--help", "-h", "help":
 		usage()
 		return ExitWriteOK
+	case "--":
+		// `golden-lock -- <path>...` is the bare-path shorthand with options
+		// explicitly closed; runLock rejects a `--` that names no paths.
+		return runLock(args)
 	default:
 		// A bare existing path is shorthand for `lock <path>...`. Locking is the
 		// only direction inferred this way: unlock weakens the guarantee the tool
 		// exists to provide, so it always stays an explicit verb. The stat guard
 		// keeps a mistyped verb (`verfiy`) an unknown command instead of a lock
-		// attempt on a nonexistent file; a leading `-` also fails it.
+		// attempt on a nonexistent file. The prepended `--` keeps an existing
+		// file named like a flag (`-y`) a path rather than letting runLock parse
+		// it as --yes over an empty path list — a proposal-locks sweep.
 		if _, err := os.Stat(args[0]); err == nil {
-			return runLock(args)
+			pathsOnly := append([]string{"--"}, args...)
+			return runLock(pathsOnly)
 		}
 		fmt.Fprintf(os.Stderr, "%s: unknown command %q\n\n", progName(), args[0])
 		usage()
