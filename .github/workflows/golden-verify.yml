@@ -31,7 +31,9 @@ jobs:
       - name: verify locked files
         run: |
           if [ -f golden-lock/golden.lock ]; then
-            ./gl verify
+            # --lockfile pins the checkout's own manifest so a planted .git or
+            # manifest marker can't steer root discovery elsewhere (#27).
+            ./gl --lockfile golden-lock/golden.lock verify
           else
             echo "no golden-lock/golden.lock present yet — nothing is locked; skipping."
             echo "this gate activates automatically once you run 'sudo golden-lock lock <file>'."

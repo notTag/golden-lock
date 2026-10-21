@@ -194,6 +194,8 @@ func runLock(args []string) int
 func runUnlock(args []string) int
 func runVerify(args []string) int
 func usage()
+func extractLockfileFlag(args []string) (remaining []string, lockfilePath string, err error)
+func rootFromLockfile(lockfilePath string) (string, error) // <root>/golden-lock/golden.lock → <root>
 func dispatch(args []string) int // routes argv[1:], returns process exit code
 func main()
 ```
@@ -244,8 +246,14 @@ who can plant such a marker may influence WHICH directory is chosen as the root.
 This cannot induce a symlink-follow (the chosen root is still opened through the
 O_NOFOLLOW canonical walk above) and cannot launder a root-owned `0444` hash
 (chown still targets the real inode); at worst it selects a different legitimate
-directory the attacker already controls. (A future explicit `--lockfile` flag
-would sidestep discovery entirely; not implemented in this happy-path build.)
+directory the attacker already controls. The global `--lockfile <path>` flag
+(#27) sidesteps discovery entirely: `dispatch` strips it (before or after the
+subcommand, up to a bare `--`) via `extractLockfileFlag`, and `rootFromLockfile`
+takes the root as the directory two levels above a path that must end in
+`golden-lock/golden.lock` — no marker walk, no git probe, no loose-dir fallback.
+The residual therefore applies only to implicit discovery; pin the flag in CI and
+hooks. Components at and above the named root are resolved by the kernel as
+before — the flag narrows root *selection*, it does not change that boundary.
 
 **Symlink / inode safety (symlink-FREE resolver).** Resolution never trusts a
 path string twice and never follows a symlink at ANY component. `resolveNoSymlink`
