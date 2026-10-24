@@ -51,6 +51,12 @@ inferred this way — `unlock` always stays an explicit verb, because inferring
 the direction that *weakens* the guarantee from the current state is exactly
 how a locked file gets opened by accident.
 
+`lock` and `unlock` treat everything after `--` as a path: `golden-lock lock -- -y`
+locks a file named `-y` instead of reading it as `--yes`. A `--` with nothing
+after it exits `5` rather than falling back to the proposal-locks sweep, so a
+script that passes user-chosen names (`golden-lock lock -- "$@"`) fails loudly
+on an empty selection instead of locking everything listed.
+
 | Command | Effect | Privilege |
 |---|---|---|
 | `lock [<file>...]` | Hash each file, record it in `golden-lock/golden.lock`, then root-own + `chmod 444` + set the immutable flag on the file(s) **and the manifest**. The verb is optional when the first argument is an existing path (`golden-lock <file>...`). With **no files**, locks every path listed under `golden-lock/proposal-locks/`. Outside a project (no `.git` and no manifest above), the working directory becomes the root and the manifest is created there. Prints a per-file warning if the filesystem can't store the flag (detection-only). | **sudo** |
